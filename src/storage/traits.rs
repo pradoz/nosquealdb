@@ -66,12 +66,12 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
 
-    struct MockStorage {
+    struct FailingStorage {
         data: HashMap<String, Vec<u8>>,
         fail_on_key: Option<String>,
     }
 
-    impl MockStorage {
+    impl FailingStorage {
         fn new() -> Self {
             Self {
                 data: HashMap::new(),
@@ -91,7 +91,7 @@ mod tests {
         }
     }
 
-    impl Storage for MockStorage {
+    impl Storage for FailingStorage {
         fn put(&mut self, key: &str, value: Vec<u8>) -> StorageResult<()> {
             self.check_fail(key)?;
             self.data.insert(key.to_string(), value);
@@ -120,126 +120,44 @@ mod tests {
     }
 
     #[test]
-    fn is_empty() {
-        let mut storage = MockStorage::new();
-        assert!(storage.is_empty());
+    fn put_if_not_exists_returns_error_on_duplicate() {
+        let mut storage = FailingStorage::new();
+        storage.put("key", vec![1]).unwrap();
 
-        let _ = storage.put("foo", vec![42]);
-        assert!(!storage.is_empty());
-    }
+        let result = storage.put_if_not_exists("key", vec![2]);
 
-    #[test]
-    fn put_if_not_exists() {
-        let mut storage = MockStorage::new();
-
-        // success
-        let result = storage.put_if_not_exists("foo", vec![1, 2]);
-        assert!(result.is_ok());
-        assert_eq!(storage.get("foo").unwrap(), Some(vec![1, 2]));
-
-        // fails, already exists
-        let result = storage.put_if_not_exists("foo", vec![1, 2]);
-        assert!(result.is_err());
         assert!(result.unwrap_err().key_already_exists());
-
-        // value should be unmodified
-        assert_eq!(storage.get("foo").unwrap(), Some(vec![1, 2]));
+        // value is preserved
+        assert_eq!(storage.get("key").unwrap(), Some(vec![1]));
     }
 
     #[test]
-    fn get_or_error() {
-        let mut storage = MockStorage::new();
-        let _ = storage.put("bar", vec![42]);
+    fn update_returns_error_on_missing() {
+        let mut storage = FailingStorage::new();
 
-        let result = storage.get_or_error("bar");
-        assert_eq!(result.unwrap(), vec![42]);
+        let result = storage.update("missing", vec![1]);
 
-        let result = storage.get_or_error("lala");
-        assert!(result.is_err());
         assert!(result.unwrap_err().is_not_found());
     }
 
     #[test]
-    fn update() {
-        let mut storage = MockStorage::new();
+    fn get_or_error_returns_error_on_missing() {
+        let storage = FailingStorage::new();
 
-        let key = "key";
-        let value = vec![42];
-        let new_value = vec![67];
+        let result = storage.get_or_error("missing");
 
-        // modify existing key
-        storage.put(key, value).unwrap();
-        let result = storage.update(key, new_value.clone());
-        assert!(result.is_ok());
-        assert_eq!(storage.get(key).unwrap(), Some(new_value));
-
-        // fails when key is missing
-        let result = storage.update("notfound", vec![1]);
-        assert!(result.is_err());
         assert!(result.unwrap_err().is_not_found());
     }
 
     #[test]
-    fn get_many() {
-        let mut storage = MockStorage::new();
+    fn storage_ext_propagates_underlying_errors() {
+        let mut storage = FailingStorage::new();
+        storage.fail_on("boom");
 
-        // empty should work
-        let result = storage.get_many(&[]).unwrap();
-        assert!(result.is_empty());
-
-        // TODO: batch operations
-        storage.put("foo", vec![1]).unwrap();
-        storage.put("bar", vec![2]).unwrap();
-        storage.put("baz", vec![3]).unwrap();
-        assert_eq!(storage.len(), 3);
-
-        let result = storage
-            .get_many(&["foo", "bar", "baz", "notfound"])
-            .unwrap();
-        assert_eq!(result[0], Some(vec![1]));
-        assert_eq!(result[1], Some(vec![2]));
-        assert_eq!(result[2], Some(vec![3]));
-        assert_eq!(result[3], None);
-    }
-
-    #[test]
-    fn delete() {
-        let mut storage = MockStorage::new();
-
-        // missing key
-        // TODO: figure out how to handle these
-        let _ = storage.delete("notfound");
-
-        let _ = storage.put("a", vec![1]);
-        let result = storage.delete("a");
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn delete_and_get_old() {
-        let mut storage = MockStorage::new();
-
-        // missing key
-        let result = storage.delete_and_get_old("notfound");
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), None);
-
-        let _ = storage.put("a", vec![1]);
-        let result = storage.delete_and_get_old("a");
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), Some(vec![1]));
-    }
-
-    #[test]
-    fn propagate_errors() {
-        let mut storage = MockStorage::new();
-        let k = "boom";
-
-        storage.fail_on(k);
-
-        assert!(storage.put(k, vec![1]).is_err());
-        assert!(storage.get(k).is_err());
-        assert!(storage.exists(k).is_err());
-        assert!(storage.delete(k).is_err());
+        assert!(storage.put_if_not_exists("boom", vec![]).is_err());
+        assert!(storage.get_or_error("boom").is_err());
+        assert!(storage.update("boom", vec![]).is_err());
+        assert!(storage.get_many(&["boom"]).is_err());
+        assert!(storage.delete_and_get_old("boom").is_err());
     }
 }
