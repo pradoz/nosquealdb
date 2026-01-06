@@ -73,7 +73,10 @@ mod tests {
 
     impl MockStorage {
         fn new() -> Self {
-            Self { data: HashMap::new(), fail_on_key: None }
+            Self {
+                data: HashMap::new(),
+                fail_on_key: None,
+            }
         }
 
         fn fail_on(&mut self, key: &str) {
@@ -130,17 +133,17 @@ mod tests {
         let mut storage = MockStorage::new();
 
         // success
-        let result = storage.put_if_not_exists("foo", vec![1,2]);
+        let result = storage.put_if_not_exists("foo", vec![1, 2]);
         assert!(result.is_ok());
-        assert_eq!(storage.get("foo").unwrap(), Some(vec![1,2]));
+        assert_eq!(storage.get("foo").unwrap(), Some(vec![1, 2]));
 
         // fails, already exists
-        let result = storage.put_if_not_exists("foo", vec![1,2]);
+        let result = storage.put_if_not_exists("foo", vec![1, 2]);
         assert!(result.is_err());
         assert!(result.unwrap_err().key_already_exists());
 
         // value should be unmodified
-        assert_eq!(storage.get("foo").unwrap(), Some(vec![1,2]));
+        assert_eq!(storage.get("foo").unwrap(), Some(vec![1, 2]));
     }
 
     #[test]
@@ -190,7 +193,9 @@ mod tests {
         storage.put("baz", vec![3]).unwrap();
         assert_eq!(storage.len(), 3);
 
-        let result = storage.get_many(&["foo", "bar", "baz", "notfound"]).unwrap();
+        let result = storage
+            .get_many(&["foo", "bar", "baz", "notfound"])
+            .unwrap();
         assert_eq!(result[0], Some(vec![1]));
         assert_eq!(result[1], Some(vec![2]));
         assert_eq!(result[2], Some(vec![3]));
