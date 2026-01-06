@@ -2,5 +2,9 @@
 name = "nosquealdb"
 version = "0.1.0"
 edition = "2024"
+description = "NoSQL Database"
+license = "MIT"
 
 [dependencies]
+
+[dev-dependencies]
