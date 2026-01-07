@@ -1,163 +1,99 @@
-use nosquealdb::{MemoryStorage, Storage, StorageError, StorageExt};
+use nosquealdb::{AttributeValue, Item, KeySchema, KeyType, PrimaryKey, Table};
+use std::collections::BTreeMap;
 
-fn to_bytes(s: &str) -> Vec<u8> {
-    s.as_bytes().to_vec()
-}
-
-fn from_bytes(bytes: &[u8]) -> String {
-    String::from_utf8_lossy(bytes).to_string()
-}
-
-mod usage_patterns {
-    use super::*;
-
-    #[test]
-    fn entity_crud_with_composite_keys() {
-        let mut db = MemoryStorage::new();
-
-        // create
-        db.put("user:123:name", to_bytes("Alice")).unwrap();
-        db.put("user:123:email", to_bytes("alice@example.com"))
-            .unwrap();
-
-        // read
-        let name = db.get("user:123:name").unwrap().map(|b| from_bytes(&b));
-        assert_eq!(name, Some("Alice".to_string()));
-
-        // update
-        db.put("user:123:name", to_bytes("Alice Smith")).unwrap();
-
-        // delete
-        db.delete("user:123:name").unwrap();
-        db.delete("user:123:email").unwrap();
-        assert!(db.is_empty());
-    }
-
-    #[test]
-    fn counter_increment_pattern() {
-        let mut db = MemoryStorage::new();
-
-        let get_count = |db: &MemoryStorage, key: &str| -> u64 {
-            db.get(key)
-                .unwrap()
-                .map(|b| u64::from_le_bytes(b.try_into().unwrap_or([0; 8])))
-                .unwrap_or(0)
-        };
-
-        let increment = |db: &mut MemoryStorage, key: &str| {
-            let current = get_count(db, key);
-            db.put(key, (current + 1).to_le_bytes().to_vec()).unwrap();
-        };
-
-        increment(&mut db, "visits");
-        increment(&mut db, "visits");
-        increment(&mut db, "visits");
-
-        assert_eq!(get_count(&db, "visits"), 3);
-    }
-
-    #[test]
-    fn prefix_scanning() {
-        let mut db = MemoryStorage::new();
-
-        db.put("user:1:name", to_bytes("Alice")).unwrap();
-        db.put("user:2:name", to_bytes("Bob")).unwrap();
-        db.put("order:1", to_bytes("order data")).unwrap();
-
-        assert_eq!(db.count_with_prefix("user:"), 2);
-        assert_eq!(db.count_with_prefix("order:"), 1);
-        assert_eq!(db.count_with_prefix("nonexistent:"), 0);
-    }
-}
-
-mod conditional_operations {
-    use super::*;
-
-    #[test]
-    fn put_if_not_exists_prevents_overwrite() {
-        let mut db = MemoryStorage::new();
-
-        db.put_if_not_exists("key", to_bytes("first")).unwrap();
-        let result = db.put_if_not_exists("key", to_bytes("second"));
-
-        assert!(result.unwrap_err().key_already_exists());
-        assert_eq!(db.get("key").unwrap(), Some(to_bytes("first")));
-    }
-
-    #[test]
-    fn update_requires_existing_key() {
-        let mut db = MemoryStorage::new();
-
-        let result = db.update("missing", to_bytes("value"));
-        assert!(result.unwrap_err().is_not_found());
-
-        db.put("exists", to_bytes("original")).unwrap();
-        db.update("exists", to_bytes("updated")).unwrap();
-        assert_eq!(db.get("exists").unwrap(), Some(to_bytes("updated")));
-    }
-
-    #[test]
-    fn get_or_error_distinguishes_missing_from_empty() {
-        let mut db = MemoryStorage::new();
-
-        // missing key should error
-        assert!(db.get_or_error("missing").unwrap_err().is_not_found());
-
-        // empty value is valid
-        db.put("empty", vec![]).unwrap();
-        assert_eq!(db.get_or_error("empty").unwrap(), vec![]);
-    }
-}
-
-mod error_handling {
-    use super::*;
-
-    #[test]
-    fn errors_expose_key_for_debugging() {
-        let err = StorageError::not_found("user:123");
-
-        assert_eq!(err.key(), Some("user:123"));
-        assert!(err.to_string().contains("user:123"));
-    }
-
-    #[test]
-    fn errors_can_be_pattern_matched() {
-        let mut db = MemoryStorage::new();
-        db.put("existing", vec![]).unwrap();
-
-        match db.put_if_not_exists("existing", vec![]) {
-            Err(StorageError::KeyAlreadyExists { key }) => {
-                assert_eq!(key, "existing");
-            }
-            _ => panic!("Expected KeyAlreadyExists"),
-        }
-    }
-}
 #[test]
-fn cloned_storage_is_independent() {
-    let mut original = MemoryStorage::new();
-    original.put("key", to_bytes("original")).unwrap();
+fn nested_document_survives_roundtrip() {
+    let mut table = Table::new("docs", KeySchema::simple("id", KeyType::S));
 
-    let mut clone = original.clone();
-    clone.put("key", to_bytes("modified")).unwrap();
+    let mut address = BTreeMap::new();
+    address.insert("city".to_string(), AttributeValue::S("Candyland".into()));
+    address.insert("zip".to_string(), AttributeValue::N("12345".into()));
 
-    // mutations should not cross
-    assert_eq!(original.get("key").unwrap(), Some(to_bytes("original")));
-    assert_eq!(clone.get("key").unwrap(), Some(to_bytes("modified")));
+    let item = Item::new()
+        .with_s("id", "doc-1")
+        .with("address", AttributeValue::M(address))
+        .with(
+            "scores",
+            AttributeValue::L(vec![
+                AttributeValue::N("95".into()),
+                AttributeValue::N("87".into()),
+            ]),
+        );
+
+    table.put_item(item).unwrap();
+
+    let retrieved = table
+        .get_item(&PrimaryKey::simple("doc-1"))
+        .unwrap()
+        .unwrap();
+    let addr = retrieved.get("address").unwrap().as_m().unwrap();
+    assert_eq!(
+        addr.get("city"),
+        Some(&AttributeValue::S("Candyland".into()))
+    );
 }
 
 #[test]
-fn handles_many_items() {
-    let mut db = MemoryStorage::with_capacity(10_000);
+fn special_characters_in_keys() {
+    let mut table = Table::new("test", KeySchema::simple("id", KeyType::S));
 
-    for i in 0..10_000 {
-        db.put(&format!("key:{i:05}"), format!("value:{i}").into_bytes())
+    let keys = ["key#hash", "key:colon", "key\\slash", "a#:\\b"];
+
+    for key in &keys {
+        table
+            .put_item(Item::new().with_s("id", *key).with_s("k", *key))
             .unwrap();
     }
 
-    assert_eq!(db.len(), 10_000);
-    assert!(db.exists("key:05000").unwrap());
+    for key in &keys {
+        let item = table.get_item(&PrimaryKey::simple(*key)).unwrap().unwrap();
+        assert_eq!(item.get("k"), Some(&AttributeValue::S((*key).into())));
+    }
+}
 
-    // retrieval works
-    assert_eq!(db.get("key:09999").unwrap(), Some(b"value:9999".to_vec()));
+#[test]
+fn composite_keys_are_isolated() {
+    let mut table = Table::new(
+        "orders",
+        KeySchema::composite("user", KeyType::S, "order", KeyType::S),
+    );
+
+    table
+        .put_item(
+            Item::new()
+                .with_s("user", "a")
+                .with_s("order", "1")
+                .with_n("v", 1),
+        )
+        .unwrap();
+    table
+        .put_item(
+            Item::new()
+                .with_s("user", "a")
+                .with_s("order", "2")
+                .with_n("v", 2),
+        )
+        .unwrap();
+    table
+        .put_item(
+            Item::new()
+                .with_s("user", "b")
+                .with_s("order", "1")
+                .with_n("v", 3),
+        )
+        .unwrap();
+
+    assert_eq!(table.len(), 3);
+
+    let get_v = |u, o| -> i32 {
+        let item = table
+            .get_item(&PrimaryKey::composite(u, o))
+            .unwrap()
+            .unwrap();
+        item.get("v").unwrap().as_n().unwrap().parse().unwrap()
+    };
+
+    assert_eq!(get_v("a", "1"), 1);
+    assert_eq!(get_v("a", "2"), 2);
+    assert_eq!(get_v("b", "1"), 3);
 }
