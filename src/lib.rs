@@ -1,9 +1,11 @@
 pub mod error;
+pub mod query;
 pub mod storage;
 pub mod table;
 pub mod types;
 
 pub use error::{StorageError, StorageResult, TableError, TableResult};
+pub use query::{KeyCondition, QueryOptions, QueryResult, SortKeyOp};
 pub use storage::{MemoryStorage, Storage, StorageExt};
 pub use table::Table;
 pub use types::{

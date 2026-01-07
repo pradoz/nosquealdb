@@ -1,3 +1,3 @@
 mod core;
 
-pub use core::Table;
+pub use core::{Table, TableBuilder};

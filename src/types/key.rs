@@ -1,6 +1,6 @@
 use super::AttributeValue;
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KeyValue {
     S(String),
     N(String),
@@ -76,7 +76,7 @@ impl From<&[u8]> for KeyValue {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PrimaryKey {
     pub pk: KeyValue,
     pub sk: Option<KeyValue>,
