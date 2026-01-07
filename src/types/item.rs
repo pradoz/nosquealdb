@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use super::{AttributeValue, KeySchema, KeyType, KeyValue, PrimaryKey};
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Item {
     attributes: BTreeMap<String, AttributeValue>,
 }
@@ -80,7 +80,7 @@ impl Item {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KeyValidationError {
     MissingAttribute {
         name: String,

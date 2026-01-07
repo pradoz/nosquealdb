@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum AttributeValue {
     // scalar types
     S(String),
