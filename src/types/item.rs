@@ -26,6 +26,10 @@ impl Item {
         self.attributes.remove(key)
     }
 
+    pub fn contains(&self, key: &str) -> bool {
+        self.attributes.contains_key(key)
+    }
+
     pub fn exists(&self, key: &str) -> bool {
         self.attributes.contains_key(key)
     }
@@ -206,6 +210,14 @@ impl<'a> IntoIterator for &'a Item {
 
     fn into_iter(self) -> Self::IntoIter {
         self.attributes.iter()
+    }
+}
+
+impl FromIterator<(String, AttributeValue)> for Item {
+    fn from_iter<T: IntoIterator<Item = (String, AttributeValue)>>(iter: T) -> Self {
+        Self {
+            attributes: iter.into_iter().collect(),
+        }
     }
 }
 
