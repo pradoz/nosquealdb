@@ -4,6 +4,7 @@ pub mod query;
 pub mod storage;
 pub mod table;
 pub mod types;
+pub mod utils;
 
 pub use error::{StorageError, StorageResult, TableError, TableResult};
 pub use index::{GlobalSecondaryIndex, GsiBuilder, LocalSecondaryIndex, LsiBuilder, Projection};

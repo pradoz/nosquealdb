@@ -56,11 +56,14 @@ impl Item {
 
     pub fn extract_key(&self, schema: &KeySchema) -> Option<PrimaryKey> {
         let pk_attr = self.get(schema.pk_name())?;
-        let pk = extract_key_value(pk_attr, schema.partition_key.key_type)?;
+        let pk = KeyValue::from_attribute_with_type(pk_attr, schema.partition_key.key_type)?;
 
         let sk = if let Some(sk_attr_def) = &schema.sort_key {
             let sk_attr = self.get(&sk_attr_def.name)?;
-            Some(extract_key_value(sk_attr, sk_attr_def.key_type)?)
+            Some(KeyValue::from_attribute_with_type(
+                sk_attr,
+                sk_attr_def.key_type,
+            )?)
         } else {
             None
         };
@@ -81,6 +84,12 @@ impl Item {
         }
 
         Ok(())
+    }
+}
+
+impl Default for Item {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -118,15 +127,6 @@ impl std::fmt::Display for KeyValidationError {
 }
 
 impl std::error::Error for KeyValidationError {}
-
-fn extract_key_value(attr: &AttributeValue, expected_type: KeyType) -> Option<KeyValue> {
-    match (attr, expected_type) {
-        (AttributeValue::S(s), KeyType::S) => Some(KeyValue::S(s.clone())),
-        (AttributeValue::N(n), KeyType::N) => Some(KeyValue::N(n.clone())),
-        (AttributeValue::B(b), KeyType::B) => Some(KeyValue::B(b.clone())),
-        _ => None,
-    }
-}
 
 fn validate_key_attribute(
     attributes: &BTreeMap<String, AttributeValue>,

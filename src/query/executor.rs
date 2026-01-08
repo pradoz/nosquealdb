@@ -61,6 +61,11 @@ impl<'a> QueryExecutor<'a> {
         Self { schema }
     }
 
+    /// TODO: performance : current implementation collects all matches before sorting.
+    /// For large result sets, consider:
+    /// - a BTreeMap keyed by sort key during collection to avoid post-sort
+    /// - early termination for limited queries when data is pre-sorted
+    /// - streaming results instead of collecting into Vec
     pub fn execute(
         &self,
         items: impl Iterator<Item = (PrimaryKey, Item)>,

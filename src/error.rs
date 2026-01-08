@@ -1,7 +1,7 @@
 use std::error::Error;
 use std::fmt;
 
-use crate::types::KeyValidationError;
+use crate::types::{DecodeError, KeyValidationError};
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum StorageError {
@@ -67,6 +67,7 @@ pub enum TableError {
     InvalidKey(KeyValidationError),
     ItemNotFound,
     ItemAlreadyExists,
+    IndexNotFound { name: String },
     Storage(String),
     Encoding(String),
 }
@@ -81,6 +82,12 @@ impl TableError {
     pub fn is_invalid_key(&self) -> bool {
         matches!(self, Self::InvalidKey(_))
     }
+    pub fn is_index_not_found(&self) -> bool {
+        matches!(self, Self::IndexNotFound { .. })
+    }
+    pub fn index_not_found(name: impl Into<String>) -> Self {
+        Self::IndexNotFound { name: name.into() }
+    }
 }
 
 impl fmt::Display for TableError {
@@ -89,6 +96,7 @@ impl fmt::Display for TableError {
             TableError::InvalidKey(e) => write!(f, "invalid key: {}", e),
             TableError::ItemNotFound => write!(f, "item not found"),
             TableError::ItemAlreadyExists => write!(f, "item already exists"),
+            TableError::IndexNotFound { name } => write!(f, "index not found: {}", name),
             TableError::Storage(msg) => write!(f, "storage error: {}", msg),
             TableError::Encoding(msg) => write!(f, "encoding error: {}", msg),
         }
@@ -116,8 +124,8 @@ impl From<StorageError> for TableError {
     }
 }
 
-impl From<crate::types::DecodeError> for TableError {
-    fn from(e: crate::types::DecodeError) -> Self {
+impl From<DecodeError> for TableError {
+    fn from(e: DecodeError) -> Self {
         Self::Encoding(e.to_string())
     }
 }

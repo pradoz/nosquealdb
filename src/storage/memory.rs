@@ -4,7 +4,9 @@ use super::traits::Storage;
 use crate::error::StorageResult;
 
 /// NOT thread-safe
-/// TODO: wrap in `Arc<RwLock<MemoryStorage>>` or use a concurrent implementation
+/// TODO: performance: consider a concurrent hashmap implementation for
+/// multi-threaded access without external synchronization
+/// TODO: performance: for large datasets, consider memory-mapped storage
 #[derive(Debug, Clone)]
 pub struct MemoryStorage {
     data: HashMap<String, Vec<u8>>,

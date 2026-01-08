@@ -176,7 +176,7 @@ impl Table {
         let gsi = self
             .gsis
             .get(index_name)
-            .ok_or_else(|| TableError::Storage(format!("GSI not found: {}", index_name)))?;
+            .ok_or_else(|| TableError::index_not_found(index_name))?;
 
         gsi.query_with_options(condition, options)
     }
@@ -185,7 +185,6 @@ impl Table {
         self.query_lsi_with_options(index_name, condition, QueryOptions::new())
     }
 
-    /// Query an LSI with options.
     pub fn query_lsi_with_options(
         &self,
         index_name: &str,
@@ -195,7 +194,7 @@ impl Table {
         let lsi = self
             .lsis
             .get(index_name)
-            .ok_or_else(|| TableError::Storage(format!("LSI not found: {}", index_name)))?;
+            .ok_or_else(|| TableError::index_not_found(index_name))?;
 
         lsi.query_with_options(condition, options)
     }
@@ -247,6 +246,8 @@ impl Table {
         }
     }
 
+    /// TODO: performance: this allocates a Vec for all items. For large tables,
+    /// consider returning an iterator that decodes lazily to reduce memory pressure
     fn iter_with_keys(&self) -> TableResult<Vec<(PrimaryKey, Item)>> {
         let mut result = Vec::new();
         for (_, value) in self.storage.iter() {

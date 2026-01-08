@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use crate::error::TableResult;
 use crate::query::{KeyCondition, QueryExecutor, QueryOptions, QueryResult};
 use crate::types::{Item, KeyAttribute, KeySchema, KeyType, KeyValue, PrimaryKey};
+use crate::utils::base64_encode;
 
 use super::projection::Projection;
 
@@ -99,12 +100,12 @@ impl LocalSecondaryIndex {
 
     fn extract_pk_from_item(&self, item: &Item) -> Option<KeyValue> {
         let attr = item.get(self.table_schema.pk_name())?;
-        extract_key_value(attr, self.table_schema.partition_key.key_type)
+        KeyValue::from_attribute_with_type(attr, self.table_schema.partition_key.key_type)
     }
 
     fn extract_lsi_sort_key(&self, item: &Item) -> Option<KeyValue> {
         let attr = item.get(&self.sort_key.name)?;
-        extract_key_value(attr, self.sort_key.key_type)
+        KeyValue::from_attribute_with_type(attr, self.sort_key.key_type)
     }
 
     fn make_storage_key(&self, pk: &KeyValue, lsi_sk: &KeyValue, table_key: &PrimaryKey) -> String {
@@ -123,53 +124,12 @@ impl LocalSecondaryIndex {
     }
 }
 
-fn extract_key_value(
-    attr: &crate::types::AttributeValue,
-    expected_type: KeyType,
-) -> Option<KeyValue> {
-    use crate::types::AttributeValue;
-
-    match (attr, expected_type) {
-        (AttributeValue::S(s), KeyType::S) => Some(KeyValue::S(s.clone())),
-        (AttributeValue::N(n), KeyType::N) => Some(KeyValue::N(n.clone())),
-        (AttributeValue::B(b), KeyType::B) => Some(KeyValue::B(b.clone())),
-        _ => None,
-    }
-}
-
 fn pk_to_string(kv: &KeyValue) -> String {
     match kv {
         KeyValue::S(s) => format!("S:{}", s),
         KeyValue::N(n) => format!("N:{}", n),
         KeyValue::B(b) => format!("B:{}", base64_encode(b)),
     }
-}
-
-fn base64_encode(data: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-    let mut result = String::new();
-    for chunk in data.chunks(3) {
-        let b0 = chunk[0] as usize;
-        let b1 = chunk.get(1).copied().unwrap_or(0) as usize;
-        let b2 = chunk.get(2).copied().unwrap_or(0) as usize;
-
-        result.push(ALPHABET[b0 >> 2] as char);
-        result.push(ALPHABET[((b0 & 0x03) << 4) | (b1 >> 4)] as char);
-
-        if chunk.len() > 1 {
-            result.push(ALPHABET[((b1 & 0x0F) << 2) | (b2 >> 6)] as char);
-        } else {
-            result.push('=');
-        }
-
-        if chunk.len() > 2 {
-            result.push(ALPHABET[b2 & 0x3F] as char);
-        } else {
-            result.push('=');
-        }
-    }
-    result
 }
 
 pub struct LsiBuilder {

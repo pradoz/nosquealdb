@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use crate::error::TableResult;
 use crate::query::{KeyCondition, QueryExecutor, QueryOptions, QueryResult};
-use crate::types::{AttributeValue, Item, KeySchema, KeyType, KeyValue, PrimaryKey};
+use crate::types::{Item, KeySchema, KeyValue, PrimaryKey};
 
 use super::projection::Projection;
 
@@ -12,6 +12,8 @@ pub struct GlobalSecondaryIndex {
     schema: KeySchema,
     projection: Projection,
     table_schema: KeySchema,
+    /// TODO: performance: O(n) scan in remove_by_table_key to find item by table key
+    /// consider maintaining a reverse index (table_key -> storage_key) for O(1) deletion.
     data: HashMap<String, (PrimaryKey, Item)>,
 }
 
@@ -96,11 +98,14 @@ impl GlobalSecondaryIndex {
 
     fn extract_index_key(&self, item: &Item) -> Option<PrimaryKey> {
         let pk_attr = item.get(self.schema.pk_name())?;
-        let pk = extract_key_value(pk_attr, self.schema.partition_key.key_type)?;
+        let pk = KeyValue::from_attribute_with_type(pk_attr, self.schema.partition_key.key_type)?;
 
         let sk = if let Some(sk_def) = &self.schema.sort_key {
             let sk_attr = item.get(&sk_def.name)?;
-            Some(extract_key_value(sk_attr, sk_def.key_type)?)
+            Some(KeyValue::from_attribute_with_type(
+                sk_attr,
+                sk_def.key_type,
+            )?)
         } else {
             None
         };
@@ -123,15 +128,6 @@ impl GlobalSecondaryIndex {
             .find(|(_, (tk, _))| tk == table_key)
             .map(|(k, _)| k.clone());
         key_to_remove.and_then(|k| self.data.remove(&k).map(|(_, item)| item))
-    }
-}
-
-fn extract_key_value(attr: &AttributeValue, expected_type: KeyType) -> Option<KeyValue> {
-    match (attr, expected_type) {
-        (AttributeValue::S(s), KeyType::S) => Some(KeyValue::S(s.clone())),
-        (AttributeValue::N(n), KeyType::N) => Some(KeyValue::N(n.clone())),
-        (AttributeValue::B(b), KeyType::B) => Some(KeyValue::B(b.clone())),
-        _ => None,
     }
 }
 
@@ -178,6 +174,7 @@ impl GsiBuilder {
 mod tests {
     use super::*;
     use crate::query::KeyCondition;
+    use crate::types::KeyType;
 
     fn table_schema() -> KeySchema {
         KeySchema::composite("user_id", KeyType::S, "order_id", KeyType::S)
