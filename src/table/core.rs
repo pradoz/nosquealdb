@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
 
 use crate::error::{TableError, TableResult};
+use crate::index::{GlobalSecondaryIndex, GsiBuilder, LocalSecondaryIndex, LsiBuilder};
+use crate::query::{KeyCondition, QueryExecutor, QueryOptions, QueryResult};
 use crate::storage::{MemoryStorage, Storage};
 use crate::types::{AttributeValue, Item, KeySchema, PrimaryKey, decode, encode};
 
@@ -9,6 +11,8 @@ pub struct Table {
     name: String,
     schema: KeySchema,
     storage: MemoryStorage,
+    gsis: BTreeMap<String, GlobalSecondaryIndex>,
+    lsis: BTreeMap<String, LocalSecondaryIndex>,
 }
 
 impl Table {
@@ -17,47 +21,73 @@ impl Table {
             name: name.into(),
             schema,
             storage: MemoryStorage::new(),
+            gsis: BTreeMap::new(),
+            lsis: BTreeMap::new(),
         }
     }
 
     pub fn name(&self) -> &str {
         &self.name
     }
-
     pub fn schema(&self) -> &KeySchema {
         &self.schema
     }
-
     pub fn len(&self) -> usize {
         self.storage.len()
     }
-
     pub fn is_empty(&self) -> bool {
         self.storage.is_empty()
     }
-
     pub fn clear(&mut self) {
         self.storage.clear();
     }
 
-    // internal helpers
-    fn encode_item(&self, item: &Item) -> TableResult<Vec<u8>> {
-        let map: BTreeMap<String, AttributeValue> = item
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.clone()))
-            .collect();
-        let av = AttributeValue::M(map);
-        Ok(encode(&av))
-    }
+    // index management
+    pub fn add_gsi(&mut self, builder: GsiBuilder) {
+        let gsi = builder.build(self.schema.clone());
+        let name = gsi.name().to_string();
 
-    fn decode_item(&self, data: &[u8]) -> TableResult<Item> {
-        let av = decode(data)?;
-        match av {
-            AttributeValue::M(map) => Ok(Item::from(map)),
-            _ => Err(TableError::Encoding("expected map type".into())),
+        let mut gsi = gsi;
+        for item in self.scan().unwrap_or_default() {
+            if let Some(pk) = item.extract_key(&self.schema) {
+                gsi.put(pk, &item);
+            }
         }
+
+        self.gsis.insert(name, gsi);
     }
 
+    pub fn gsi(&self, name: &str) -> Option<&GlobalSecondaryIndex> {
+        self.gsis.get(name)
+    }
+
+    pub fn gsi_names(&self) -> impl Iterator<Item = &str> {
+        self.gsis.keys().map(|s| s.as_str())
+    }
+
+    pub fn add_lsi(&mut self, builder: LsiBuilder) {
+        let lsi = builder.build(self.schema.clone());
+        let name = lsi.name().to_string();
+
+        let mut lsi = lsi;
+        for item in self.scan().unwrap_or_default() {
+            if let Some(pk) = item.extract_key(&self.schema) {
+                lsi.put(&pk, &item);
+            }
+        }
+
+        self.lsis.insert(name, lsi);
+    }
+
+    pub fn lsi(&self, name: &str) -> Option<&LocalSecondaryIndex> {
+        self.lsis.get(name)
+    }
+
+    pub fn lsi_names(&self) -> impl Iterator<Item = &str> {
+        self.lsis.keys().map(|s| s.as_str())
+    }
+
+    // operations
     pub fn put_item(&mut self, item: Item) -> TableResult<Option<Item>> {
         let _ = item.validate_key(&self.schema);
 
@@ -68,10 +98,11 @@ impl Table {
         })?;
 
         let storage_key = pk.to_storage_key();
-        let encoded = self.encode_item(&item)?;
         let old_item = self.get_item_by_storage_key(&storage_key)?;
+        let encoded = self.encode_item(&item)?;
 
         self.storage.put(&storage_key, encoded)?;
+        self.update_indexes_on_put(&pk, &item);
 
         Ok(old_item)
     }
@@ -91,7 +122,9 @@ impl Table {
         }
 
         let encoded = self.encode_item(&item)?;
+
         self.storage.put(&storage_key, encoded)?;
+        self.update_indexes_on_put(&pk, &item);
 
         Ok(())
     }
@@ -107,7 +140,64 @@ impl Table {
 
         self.storage.delete(&storage_key)?;
 
+        if old_item.is_some() {
+            self.update_indexes_on_delete(key);
+        }
+
         Ok(old_item)
+    }
+
+    pub fn query(&self, condition: KeyCondition) -> TableResult<QueryResult> {
+        self.query_with_options(condition, QueryOptions::new())
+    }
+
+    pub fn query_with_options(
+        &self,
+        condition: KeyCondition,
+        options: QueryOptions,
+    ) -> TableResult<QueryResult> {
+        let executor = QueryExecutor::new(&self.schema);
+        executor.validate_condition(&condition)?;
+
+        let items = self.iter_with_keys()?;
+        executor.execute(items.into_iter(), &condition, &options)
+    }
+
+    pub fn query_gsi(&self, index_name: &str, condition: KeyCondition) -> TableResult<QueryResult> {
+        self.query_gsi_with_options(index_name, condition, QueryOptions::new())
+    }
+
+    pub fn query_gsi_with_options(
+        &self,
+        index_name: &str,
+        condition: KeyCondition,
+        options: QueryOptions,
+    ) -> TableResult<QueryResult> {
+        let gsi = self
+            .gsis
+            .get(index_name)
+            .ok_or_else(|| TableError::Storage(format!("GSI not found: {}", index_name)))?;
+
+        gsi.query_with_options(condition, options)
+    }
+
+    pub fn query_lsi(&self, index_name: &str, condition: KeyCondition) -> TableResult<QueryResult> {
+        self.query_lsi_with_options(index_name, condition, QueryOptions::new())
+    }
+
+    /// Query an LSI with options.
+    pub fn query_lsi_with_options(
+        &self,
+        index_name: &str,
+        condition: KeyCondition,
+        options: QueryOptions,
+    ) -> TableResult<QueryResult> {
+        let lsi = self
+            .lsis
+            .get(index_name)
+            .ok_or_else(|| TableError::Storage(format!("LSI not found: {}", index_name)))?;
+
+        lsi.query_with_options(condition, options)
     }
 
     pub fn scan(&self) -> TableResult<Vec<Item>> {
@@ -132,10 +222,58 @@ impl Table {
         Ok(items)
     }
 
+    // internal helpers
+    fn encode_item(&self, item: &Item) -> TableResult<Vec<u8>> {
+        let map: BTreeMap<String, AttributeValue> = item
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.clone()))
+            .collect();
+        let av = AttributeValue::M(map);
+        Ok(encode(&av))
+    }
+
+    fn decode_item(&self, data: &[u8]) -> TableResult<Item> {
+        let av = decode(data)?;
+        match av {
+            AttributeValue::M(map) => Ok(Item::from(map)),
+            _ => Err(TableError::Encoding("expected map type".into())),
+        }
+    }
+
     fn get_item_by_storage_key(&self, storage_key: &str) -> TableResult<Option<Item>> {
         match self.storage.get(storage_key)? {
             Some(data) => Ok(Some(self.decode_item(&data)?)),
             None => Ok(None),
+        }
+    }
+
+    fn iter_with_keys(&self) -> TableResult<Vec<(PrimaryKey, Item)>> {
+        let mut result = Vec::new();
+        for (_, value) in self.storage.iter() {
+            let item = self.decode_item(value)?;
+            if let Some(pk) = item.extract_key(&self.schema) {
+                result.push((pk, item));
+            }
+        }
+
+        Ok(result)
+    }
+
+    fn update_indexes_on_put(&mut self, pk: &PrimaryKey, item: &Item) {
+        for gsi in self.gsis.values_mut() {
+            gsi.put(pk.clone(), item);
+        }
+        for lsi in self.lsis.values_mut() {
+            lsi.put(pk, item);
+        }
+    }
+
+    fn update_indexes_on_delete(&mut self, pk: &PrimaryKey) {
+        for gsi in self.gsis.values_mut() {
+            gsi.delete(pk);
+        }
+        for lsi in self.lsis.values_mut() {
+            lsi.delete(pk);
         }
     }
 }
@@ -144,6 +282,8 @@ pub struct TableBuilder {
     name: String,
     schema: KeySchema,
     initial_capacity: Option<usize>,
+    gsi_builders: Vec<GsiBuilder>,
+    lsi_builders: Vec<LsiBuilder>,
 }
 
 impl TableBuilder {
@@ -152,6 +292,8 @@ impl TableBuilder {
             name: name.into(),
             schema,
             initial_capacity: None,
+            gsi_builders: Vec::new(),
+            lsi_builders: Vec::new(),
         }
     }
 
@@ -160,10 +302,26 @@ impl TableBuilder {
         self
     }
 
+    pub fn with_gsi(mut self, builder: GsiBuilder) -> Self {
+        self.gsi_builders.push(builder);
+        self
+    }
+
+    pub fn with_lsi(mut self, builder: LsiBuilder) -> Self {
+        self.lsi_builders.push(builder);
+        self
+    }
+
     pub fn build(self) -> Table {
         let mut table = Table::new(self.name, self.schema);
         if let Some(cap) = self.initial_capacity {
             table.storage = MemoryStorage::with_capacity(cap);
+        }
+        for gsi_builder in self.gsi_builders {
+            table.add_gsi(gsi_builder);
+        }
+        for lsi_builder in self.lsi_builders {
+            table.add_lsi(lsi_builder);
         }
         table
     }
@@ -260,6 +418,263 @@ mod tests {
             let key = PrimaryKey::simple(test_key_name);
             let curr = table.get_item(&key).unwrap().unwrap();
             assert_eq!(curr.get("name"), Some(&AttributeValue::S("Bob".into())));
+        }
+    }
+
+    mod indexes {
+        use super::*;
+        use crate::query::KeyCondition;
+
+        fn composite_table_with_indexes() -> Table {
+            let schema = KeySchema::composite("user_id", KeyType::S, "order_id", KeyType::S);
+
+            TableBuilder::new("orders", schema)
+                .with_gsi(GsiBuilder::new(
+                    "orders-by-date",
+                    KeySchema::composite("order_date", KeyType::S, "user_id", KeyType::S),
+                ))
+                .with_lsi(LsiBuilder::new("orders-by-status", "status", KeyType::S))
+                .build()
+        }
+
+        fn sample_order(user: &str, order: &str, date: &str, status: &str, amount: i32) -> Item {
+            Item::new()
+                .with_s("user_id", user)
+                .with_s("order_id", order)
+                .with_s("order_date", date)
+                .with_s("status", status)
+                .with_n("amount", amount)
+        }
+
+        #[test]
+        fn updated_on_delete() {
+            let mut table = composite_table_with_indexes();
+
+            table
+                .put_item(sample_order(
+                    "user1",
+                    "order001",
+                    "2026-01-08",
+                    "pending",
+                    100,
+                ))
+                .unwrap();
+
+            let result = table
+                .query_gsi("orders-by-date", KeyCondition::pk("2026-01-08"))
+                .unwrap();
+            assert_eq!(result.count, 1);
+
+            table
+                .delete_item(&PrimaryKey::composite("user1", "order001"))
+                .unwrap();
+
+            let result = table
+                .query_gsi("orders-by-date", KeyCondition::pk("2026-01-08"))
+                .unwrap();
+            assert_eq!(result.count, 0);
+        }
+
+        #[test]
+        fn updated_on_item_update() {
+            let mut table = composite_table_with_indexes();
+
+            table
+                .put_item(sample_order(
+                    "user1",
+                    "order001",
+                    "2026-01-08",
+                    "pending",
+                    100,
+                ))
+                .unwrap();
+
+            table
+                .put_item(sample_order(
+                    "user1",
+                    "order001",
+                    "2026-01-20",
+                    "shipped",
+                    150,
+                ))
+                .unwrap();
+
+            let result = table
+                .query_gsi("orders-by-date", KeyCondition::pk("2026-01-08"))
+                .unwrap();
+            assert_eq!(result.count, 0);
+
+            let result = table
+                .query_gsi("orders-by-date", KeyCondition::pk("2026-01-20"))
+                .unwrap();
+            assert_eq!(result.count, 1);
+        }
+
+        #[test]
+        fn sparse_only_indexes_items_with_attributes() {
+            let mut table = composite_table_with_indexes();
+
+            table
+                .put_item(sample_order(
+                    "user1",
+                    "order001",
+                    "2026-01-08",
+                    "pending",
+                    100,
+                ))
+                .unwrap();
+
+            // item without order_date: should not be in GSI
+            table
+                .put_item(
+                    Item::new()
+                        .with_s("user_id", "user1")
+                        .with_s("order_id", "order002")
+                        .with_s("status", "pending")
+                        .with_n("amount", 200),
+                )
+                .unwrap();
+
+            let result = table
+                .query_gsi("orders-by-date", KeyCondition::pk("2026-01-08"))
+                .unwrap();
+            assert_eq!(result.count, 1);
+
+            // should exist in the table
+            assert_eq!(table.len(), 2);
+        }
+
+        mod gsi {
+            use super::*;
+
+            #[test]
+            fn automatically_indexed_on_put() {
+                let mut table = composite_table_with_indexes();
+
+                table
+                    .put_item(sample_order(
+                        "user1",
+                        "order001",
+                        "2026-01-08",
+                        "pending",
+                        100,
+                    ))
+                    .unwrap();
+                table
+                    .put_item(sample_order(
+                        "user1",
+                        "order002",
+                        "2026-01-08",
+                        "shipped",
+                        200,
+                    ))
+                    .unwrap();
+                table
+                    .put_item(sample_order(
+                        "user2",
+                        "order003",
+                        "2026-01-08",
+                        "pending",
+                        300,
+                    ))
+                    .unwrap();
+
+                let result = table
+                    .query_gsi("orders-by-date", KeyCondition::pk("2026-01-08"))
+                    .unwrap();
+
+                assert_eq!(result.count, 3);
+            }
+
+            #[test]
+            fn query_with_sort_key_condition() {
+                let mut table = composite_table_with_indexes();
+
+                table
+                    .put_item(sample_order(
+                        "user1",
+                        "order001",
+                        "2026-01-08",
+                        "pending",
+                        100,
+                    ))
+                    .unwrap();
+                table
+                    .put_item(sample_order(
+                        "user2",
+                        "order002",
+                        "2026-01-08",
+                        "shipped",
+                        200,
+                    ))
+                    .unwrap();
+                table
+                    .put_item(sample_order(
+                        "user3",
+                        "order003",
+                        "2026-01-08",
+                        "pending",
+                        300,
+                    ))
+                    .unwrap();
+
+                // query GSI with sort key condition
+                let result = table
+                    .query_gsi(
+                        "orders-by-date",
+                        KeyCondition::pk("2026-01-08").sk_begins_with("user1"),
+                    )
+                    .unwrap();
+
+                assert_eq!(result.count, 1);
+            }
+        }
+
+        mod lsi {
+            use super::*;
+
+            #[test]
+            fn automatically_indexed_on_put() {
+                let mut table = composite_table_with_indexes();
+
+                table
+                    .put_item(sample_order(
+                        "user1",
+                        "order001",
+                        "2026-01-08",
+                        "pending",
+                        100,
+                    ))
+                    .unwrap();
+                table
+                    .put_item(sample_order(
+                        "user1",
+                        "order002",
+                        "2026-01-16",
+                        "shipped",
+                        200,
+                    ))
+                    .unwrap();
+                table
+                    .put_item(sample_order(
+                        "user1",
+                        "order003",
+                        "2026-01-17",
+                        "pending",
+                        300,
+                    ))
+                    .unwrap();
+
+                // query LSI: same partition key, different sort key
+                let result = table
+                    .query_lsi(
+                        "orders-by-status",
+                        KeyCondition::pk("user1").sk_eq("pending"),
+                    )
+                    .unwrap();
+
+                assert_eq!(result.count, 2);
+            }
         }
     }
 

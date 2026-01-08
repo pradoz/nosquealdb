@@ -328,7 +328,10 @@ mod tests {
         let mut lsi = create_lsi();
 
         let table_key = PrimaryKey::composite("user1", "order001");
-        lsi.put(&table_key, &sample_order("user1", "order001", "2026-01-08", 100));
+        lsi.put(
+            &table_key,
+            &sample_order("user1", "order001", "2026-01-08", 100),
+        );
         assert_eq!(lsi.len(), 1);
 
         lsi.delete(&table_key);
@@ -341,10 +344,16 @@ mod tests {
 
         let table_key = PrimaryKey::composite("user1", "order001");
 
-        lsi.put(&table_key, &sample_order("user1", "order001", "2026-01-08", 100));
+        lsi.put(
+            &table_key,
+            &sample_order("user1", "order001", "2026-01-08", 100),
+        );
 
         // update with different date
-        lsi.put(&table_key, &sample_order("user1", "order001", "2026-01-20", 150));
+        lsi.put(
+            &table_key,
+            &sample_order("user1", "order001", "2026-01-20", 150),
+        );
         assert_eq!(lsi.len(), 1);
 
         let result = lsi.query(KeyCondition::pk("user1")).unwrap();

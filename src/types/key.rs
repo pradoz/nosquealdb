@@ -174,7 +174,7 @@ pub struct KeyAttribute {
     pub key_type: KeyType,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct KeySchema {
     pub partition_key: KeyAttribute,
     pub sort_key: Option<KeyAttribute>,
