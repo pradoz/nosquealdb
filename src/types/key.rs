@@ -168,7 +168,7 @@ pub enum KeyType {
     B,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct KeyAttribute {
     pub name: String,
     pub key_type: KeyType,

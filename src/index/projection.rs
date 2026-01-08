@@ -1,4 +1,4 @@
-use crate::types::{AttributeValue, Item, KeySchema};
+use crate::types::{Item, KeySchema};
 use std::collections::HashSet;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
