@@ -176,6 +176,14 @@ impl Item {
         self.with(name, AttributeValue::Bool(value))
     }
 
+    pub fn with_m(self, name: impl Into<String>, value: BTreeMap<String, AttributeValue>) -> Self {
+        self.with(name, AttributeValue::M(value))
+    }
+
+    pub fn with_l(self, name: impl Into<String>, value: Vec<AttributeValue>) -> Self {
+        self.with(name, AttributeValue::L(value))
+    }
+
     pub fn with_null(self, name: impl Into<String>) -> Self {
         self.with(name, AttributeValue::Null)
     }

@@ -596,7 +596,7 @@ mod edge_cases {
         for i in 0..50 {
             nested.insert(format!("key_{}", i), AttributeValue::N(i.to_string()));
         }
-        item = item.with("nested", AttributeValue::M(nested));
+        item = item.with_m("nested", nested);
 
         table.put_item(item).unwrap();
 
