@@ -86,4 +86,51 @@ impl Condition {
             value: value.into(),
         }
     }
+
+    pub fn ne(path: impl Into<AttributePath>, value: impl Into<AttributeValue>) -> Self {
+        Self::Compare {
+            path: path.into(),
+            op: CompareOp::Ne,
+            value: value.into(),
+        }
+    }
+    pub fn lt(path: impl Into<AttributePath>, value: impl Into<AttributeValue>) -> Self {
+        Self::Compare {
+            path: path.into(),
+            op: CompareOp::Lt,
+            value: value.into(),
+        }
+    }
+    pub fn le(path: impl Into<AttributePath>, value: impl Into<AttributeValue>) -> Self {
+        Self::Compare {
+            path: path.into(),
+            op: CompareOp::Lt,
+            value: value.into(),
+        }
+    }
+    pub fn gt(path: impl Into<AttributePath>, value: impl Into<AttributeValue>) -> Self {
+        Self::Compare {
+            path: path.into(),
+            op: CompareOp::Gt,
+            value: value.into(),
+        }
+    }
+    pub fn ge(path: impl Into<AttributePath>, value: impl Into<AttributeValue>) -> Self {
+        Self::Compare {
+            path: path.into(),
+            op: CompareOp::Ge,
+            value: value.into(),
+        }
+    }
+    pub fn between(
+        path: impl Into<AttributePath>,
+        low: impl Into<AttributeValue>,
+        high: impl Into<AttributeValue>,
+    ) -> Self {
+        Self::Between {
+            path: path.into(),
+            low: low.into(),
+            high: high.into(),
+        }
+    }
 }
