@@ -21,7 +21,9 @@ impl AttributePath {
     }
 
     pub fn empty() -> Self {
-        Self { segments: Vec::new() }
+        Self {
+            segments: Vec::new(),
+        }
     }
 
     pub fn key(mut self, name: impl Into<String>) -> Self {
@@ -39,6 +41,14 @@ impl AttributePath {
             Some(PathSegment::Key(k)) => Some(k),
             _ => None,
         }
+    }
+
+    pub fn is_simple(&self) -> bool {
+        self.segments.len() == 1 && matches!(self.segments.first(), Some(PathSegment::Key(_)))
+    }
+
+    pub fn depth(&self) -> usize {
+        self.segments.len()
     }
 
     pub fn segments(&self) -> &[PathSegment] {
@@ -82,20 +92,38 @@ impl From<String> for AttributePath {
     }
 }
 
-
 mod tests {
     use super::*;
 
     #[test]
     fn simple() {
+        let path = AttributePath::new("name");
+        assert!(path.is_simple());
+        assert_eq!(path.depth(), 1);
+        assert_eq!(path.root(), Some("name"));
     }
 
     #[test]
     fn nested() {
+        let path = AttributePath::new("address").key("city");
+        assert!(!path.is_simple());
+        assert_eq!(path.depth(), 2);
+        assert_eq!(path.root(), Some("address"));
     }
 
     #[test]
     fn with_index() {
+        let path = AttributePath::new("orders").index(0).key("item");
+        assert!(!path.is_simple());
+        assert_eq!(path.depth(), 3);
+        assert_eq!(
+            path.segments(),
+            &[
+                PathSegment::Key("orders".into()),
+                PathSegment::Index(0),
+                PathSegment::Key("item".into()),
+            ]
+        );
     }
 
     mod resolve {
@@ -104,30 +132,99 @@ mod tests {
 
         #[test]
         fn simple() {
+            let item = Item::new().with_s("pk", "id");
+            let path = AttributePath::new("pk");
+            let value = path.resolve(&item);
+            assert_eq!(value, Some(&AttributeValue::S("id".into())));
         }
 
         #[test]
         fn nested() {
+            let mut map = BTreeMap::new();
+            map.insert("city".to_string(), AttributeValue::S("Newton Falls".into()));
+            map.insert("zip".to_string(), AttributeValue::N("44444".into()));
+
+            let item = Item::new().with_s("name", "zach").with_m("address", map);
+
+            let path = AttributePath::new("address").key("city");
+            let value = path.resolve(&item);
+            assert_eq!(value, Some(&AttributeValue::S("Newton Falls".into())));
+            let path = AttributePath::new("address").key("zip");
+            let value = path.resolve(&item);
+            assert_eq!(value, Some(&AttributeValue::N("44444".into())));
         }
 
         #[test]
         fn deeply_nested() {
+            let mut inner = BTreeMap::new();
+            let mut outer = BTreeMap::new();
+            inner.insert("value".to_string(), AttributeValue::N("42".into()));
+
+            let list = AttributeValue::L(vec![AttributeValue::M(inner)]);
+            outer.insert("items".to_string(), list);
+
+            let item = Item::new().with_m("data", outer);
+            let path = AttributePath::new("data")
+                .key("items")
+                .index(0)
+                .key("value");
+            let value = path.resolve(&item);
+            assert_eq!(value, Some(&AttributeValue::N("42".into())));
         }
 
         #[test]
         fn with_index() {
+            let item = Item::new().with_l(
+                "tags",
+                vec![
+                    AttributeValue::S("rust".into()),
+                    AttributeValue::S("database".into()),
+                ],
+            );
+
+            let path = AttributePath::new("tags").index(0);
+            let value = path.resolve(&item);
+            assert_eq!(value, Some(&AttributeValue::S("rust".into())));
+            let path = AttributePath::new("tags").index(1);
+            let value = path.resolve(&item);
+            assert_eq!(value, Some(&AttributeValue::S("database".into())));
         }
 
         #[test]
         fn missing_returns_none() {
+            let item = Item::new().with_s("username", "zach");
+            assert!(AttributePath::new("missing").resolve(&item).is_none());
         }
 
         #[test]
         fn wrong_type_returns_none() {
+            let item = Item::new().with_s("username", "zach");
+
+            // index on string
+            assert!(
+                AttributePath::new("username")
+                    .index(0)
+                    .resolve(&item)
+                    .is_none()
+            );
+            // key lookup on string
+            assert!(
+                AttributePath::new("username")
+                    .key("nested")
+                    .resolve(&item)
+                    .is_none()
+            );
         }
 
         #[test]
         fn out_of_bounds_returns_none() {
+            let item = Item::new().with_l("list", vec![AttributeValue::N("0".into())]);
+            assert!(
+                AttributePath::new("list")
+                    .index(1)
+                    .resolve(&item)
+                    .is_none()
+            );
         }
     }
 }
