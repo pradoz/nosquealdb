@@ -1,5 +1,7 @@
 use std::collections::BTreeMap;
 
+use crate::KeyAttribute;
+use crate::condition::{Condition, evaluate};
 use crate::error::{TableError, TableResult};
 use crate::index::{GlobalSecondaryIndex, GsiBuilder, LocalSecondaryIndex, LsiBuilder};
 use crate::query::{KeyCondition, QueryExecutor, QueryOptions, QueryResult};
@@ -40,6 +42,22 @@ impl Table {
     }
     pub fn clear(&mut self) {
         self.storage.clear();
+        for gsi in self.gsis.values_mut() {
+            *gsi = GlobalSecondaryIndex::new(
+                gsi.name(),
+                gsi.schema().clone(),
+                gsi.projection().clone(),
+                self.schema.clone(),
+            );
+        }
+        for lsi in self.lsis.values_mut() {
+            *lsi = LocalSecondaryIndex::new(
+                lsi.name(),
+                KeyAttribute::new(lsi.sort_key_name(), lsi.sort_key_type()),
+                lsi.projection().clone(),
+                self.schema.clone(),
+            );
+        }
     }
 
     // index management
@@ -89,7 +107,23 @@ impl Table {
 
     // operations
     pub fn put_item(&mut self, item: Item) -> TableResult<Option<Item>> {
-        let _ = item.validate_key(&self.schema);
+        self.put_item_internal(item, None)
+    }
+
+    pub fn put_item_with_condition(
+        &mut self,
+        item: Item,
+        condition: Condition,
+    ) -> TableResult<Option<Item>> {
+        self.put_item_internal(item, Some(condition))
+    }
+
+    fn put_item_internal(
+        &mut self,
+        item: Item,
+        condition: Option<Condition>,
+    ) -> TableResult<Option<Item>> {
+        let _ = item.validate_key(&self.schema)?;
 
         let pk = item.extract_key(&self.schema).ok_or_else(|| {
             TableError::InvalidKey(crate::types::KeyValidationError::MissingAttribute {
@@ -99,8 +133,15 @@ impl Table {
 
         let storage_key = pk.to_storage_key();
         let old_item = self.get_item_by_storage_key(&storage_key)?;
-        let encoded = self.encode_item(&item)?;
 
+        if let Some(cond) = condition {
+            let check_item = old_item.clone().unwrap_or_default();
+            if !evaluate(&cond, &check_item)? {
+                return Err(TableError::ConditionFailed);
+            }
+        }
+
+        let encoded = self.encode_item(&item)?;
         self.storage.put(&storage_key, encoded)?;
         self.update_indexes_on_put(&pk, &item);
 
@@ -108,7 +149,7 @@ impl Table {
     }
 
     pub fn put_item_if_not_exists(&mut self, item: Item) -> TableResult<()> {
-        let _ = item.validate_key(&self.schema());
+        let _ = item.validate_key(&self.schema())?;
 
         let pk = item.extract_key(&self.schema).ok_or_else(|| {
             TableError::InvalidKey(crate::types::KeyValidationError::MissingAttribute {
@@ -135,8 +176,31 @@ impl Table {
     }
 
     pub fn delete_item(&mut self, key: &PrimaryKey) -> TableResult<Option<Item>> {
+        self.delete_item_internal(key, None)
+    }
+
+    pub fn delete_item_with_condition(
+        &mut self,
+        key: &PrimaryKey,
+        condition: Condition,
+    ) -> TableResult<Option<Item>> {
+        self.delete_item_internal(key, Some(condition))
+    }
+
+    fn delete_item_internal(
+        &mut self,
+        key: &PrimaryKey,
+        condition: Option<Condition>,
+    ) -> TableResult<Option<Item>> {
         let storage_key = key.to_storage_key();
         let old_item = self.get_item_by_storage_key(&storage_key)?;
+
+        if let Some(cond) = condition {
+            let check_item = old_item.clone().unwrap_or_default();
+            if !evaluate(&cond, &check_item)? {
+                return Err(TableError::ConditionFailed);
+            }
+        }
 
         self.storage.delete(&storage_key)?;
 
@@ -163,6 +227,33 @@ impl Table {
         executor.execute(items.into_iter(), &condition, &options)
     }
 
+    pub fn query_with_filter(
+        &self,
+        key_condition: KeyCondition,
+        filter: Condition,
+    ) -> TableResult<QueryResult> {
+        self.query_with_filter_and_options(key_condition, filter, QueryOptions::new())
+    }
+
+    pub fn query_with_filter_and_options(
+        &self,
+        key_condition: KeyCondition,
+        filter: Condition,
+        options: QueryOptions,
+    ) -> TableResult<QueryResult> {
+        let mut result = self.query_with_options(key_condition, options)?;
+        let filtered: Vec<Item> = result
+            .items
+            .into_iter()
+            .filter(|item| evaluate(&filter, item).unwrap_or(false))
+            .collect();
+        let count = filtered.len();
+        result.items = filtered;
+        result.count = count;
+
+        Ok(result)
+    }
+
     pub fn query_gsi(&self, index_name: &str, condition: KeyCondition) -> TableResult<QueryResult> {
         self.query_gsi_with_options(index_name, condition, QueryOptions::new())
     }
@@ -179,6 +270,27 @@ impl Table {
             .ok_or_else(|| TableError::index_not_found(index_name))?;
 
         gsi.query_with_options(condition, options)
+    }
+
+    pub fn query_gsi_with_filter(
+        &self,
+        index_name: &str,
+        key_condition: KeyCondition,
+        filter: Condition,
+    ) -> TableResult<QueryResult> {
+        let mut result = self.query_gsi(index_name, key_condition)?;
+
+        let filtered: Vec<Item> = result
+            .items
+            .into_iter()
+            .filter(|item| evaluate(&filter, item).unwrap_or(false))
+            .collect();
+
+        let count = filtered.len();
+        result.items = filtered;
+        result.count = count;
+
+        Ok(result)
     }
 
     pub fn query_lsi(&self, index_name: &str, condition: KeyCondition) -> TableResult<QueryResult> {
@@ -208,6 +320,15 @@ impl Table {
         }
 
         Ok(items)
+    }
+
+    pub fn scan_with_filter(&self, filter: Condition) -> TableResult<Vec<Item>> {
+        let items = self.scan()?;
+
+        Ok(items
+            .into_iter()
+            .filter(|item| evaluate(&filter, item).unwrap_or(false))
+            .collect())
     }
 
     pub fn scan_limit(&self, limit: usize) -> TableResult<Vec<Item>> {
@@ -332,6 +453,7 @@ impl TableBuilder {
 mod tests {
     use super::*;
     use crate::types::KeyType;
+    use crate::condition::attr;
 
     fn simple_table() -> Table {
         Table::new("users", KeySchema::simple("user_id", KeyType::S))
@@ -680,6 +802,8 @@ mod tests {
     }
 
     mod conditional {
+        use crate::condition::attr;
+
         use super::*;
 
         #[test]
@@ -705,6 +829,83 @@ mod tests {
             let key = PrimaryKey::simple("user123");
             let item = table.get_item(&key).unwrap().unwrap();
             assert_eq!(item.get("name"), Some(&AttributeValue::S("Alice".into())))
+        }
+
+        #[test]
+        fn put_with_condition() {
+            let mut table = simple_table();
+
+            let item = Item::new()
+                .with_s("user_id", "user123")
+                .with_s("name", "Alice");
+
+            // doesn't exist yet, should succeed
+            let result = table.put_item_with_condition(item.clone(), attr("user_id").not_exists());
+            assert!(result.is_ok());
+            assert_eq!(table.len(), 1);
+
+            // alreadys exists, should fail
+            let result = table.put_item_with_condition(item.clone(), attr("user_id").not_exists());
+            assert!(result.is_err());
+            assert!(result.unwrap_err().is_condition_failed());
+            assert_eq!(table.len(), 1);
+
+            // initial put is preserved
+            let key = PrimaryKey::simple("user123");
+            let item = table.get_item(&key).unwrap().unwrap();
+            assert_eq!(item.get("name"), Some(&AttributeValue::S("Alice".into())))
+        }
+
+        #[test]
+        fn put_with_optimistic_locking() {
+            let mut table = simple_table();
+
+            table
+                .put_item(
+                    Item::new()
+                        .with_s("user_id", "user123")
+                        .with_n("version", 1),
+                )
+                .unwrap();
+
+            let item = Item::new()
+                .with_s("user_id", "user123")
+                .with_n("version", 2)
+                .with_s("name", "Alice");
+
+            let result = table.put_item_with_condition(item.clone(), attr("version").eq(1i32));
+            assert!(result.is_ok());
+
+            let key = PrimaryKey::simple("user123");
+            let stored = table.get_item(&key).unwrap().unwrap();
+            assert_eq!(stored.get("version"), Some(&AttributeValue::N("2".into())));
+        }
+
+        #[test]
+        fn delete_with_condition() {
+            let mut table = simple_table();
+
+            table
+                .put_item(
+                    Item::new()
+                        .with_s("user_id", "user123")
+                        .with_s("status", "inactive"),
+                )
+                .unwrap();
+
+            let key = PrimaryKey::simple("user123");
+
+            // wrong condition, should fail
+            let result = table.delete_item_with_condition(&key, attr("status").eq("active"));
+            assert!(result.is_err());
+            assert!(result.unwrap_err().is_condition_failed());
+            assert_eq!(table.len(), 1);
+
+            // item exists, should succeed
+            let result = table.delete_item_with_condition(&key, attr("status").eq("inactive"));
+            assert!(result.is_ok());
+            assert!(table.is_empty());
+
         }
     }
 
@@ -771,6 +972,41 @@ mod tests {
         }
     }
 
+    mod query {
+        use super::*;
+
+        #[test]
+        fn with_filter() {
+            let mut table = composite_table();
+
+            for i in 1..=5 {
+                let status = if i % 2 == 0 { "shipped" } else { "pending" };
+                table
+                    .put_item(
+                        Item::new()
+                            .with_s("user_id", "user1")
+                            .with_s("order_id", format!("order#{:03}", i))
+                            .with_s("status", status)
+                            .with_n("amount", i * 100),
+                    )
+                    .unwrap();
+            }
+
+            let result = table
+                .query_with_filter(KeyCondition::pk("user1"), attr("status").eq("pending"))
+                .unwrap();
+            assert_eq!(result.count, 3);
+
+            let result = table
+                .query_with_filter(
+                    KeyCondition::pk("user1"),
+                    attr("status").eq("pending").and(attr("amount").ge(300i32)),
+                )
+                .unwrap();
+            assert_eq!(result.count, 2);
+        }
+    }
+
     mod scan {
         use super::*;
 
@@ -815,6 +1051,28 @@ mod tests {
             let items = table.scan_limit(limit).unwrap();
             assert!(!items.is_empty());
             assert_eq!(items.len(), limit);
+        }
+
+        #[test]
+        fn with_filter() {
+            let mut table = simple_table();
+            let total_items = 10;
+
+            for i in 0..total_items {
+                let status = if i % 2 == 0 { "active" } else { "inactive" };
+                table
+                    .put_item(
+                        Item::new()
+                            .with_s("user_id", format!("user{}", i))
+                            .with_s("status", status),
+                    )
+                    .unwrap();
+            }
+
+            let items = table
+                .scan_with_filter(attr("status").eq("active"))
+                .unwrap();
+            assert_eq!(items.len(), 5);
         }
     }
 }

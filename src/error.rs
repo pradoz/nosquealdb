@@ -62,12 +62,36 @@ impl Error for StorageError {}
 
 pub type StorageResult<T> = Result<T, StorageError>;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EvalError {
+    TypeMismatch {
+        left: &'static str,
+        right: &'static str,
+    }
+}
+
+impl std::fmt::Display for EvalError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::TypeMismatch { left, right } => {
+                write!(f, "cannot compare {} with {}", left, right)
+            },
+        }
+    }
+}
+
+impl std::error::Error for EvalError {}
+
+pub type EvalResult = Result<bool, EvalError>;
+
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum TableError {
     InvalidKey(KeyValidationError),
     ItemNotFound,
     ItemAlreadyExists,
     IndexNotFound { name: String },
+    ConditionFailed,
+    ConditionError(String),
     Storage(String),
     Encoding(String),
 }
@@ -85,6 +109,9 @@ impl TableError {
     pub fn is_index_not_found(&self) -> bool {
         matches!(self, Self::IndexNotFound { .. })
     }
+    pub fn is_condition_failed(&self) -> bool {
+        matches!(self, Self::ConditionFailed)
+    }
     pub fn index_not_found(name: impl Into<String>) -> Self {
         Self::IndexNotFound { name: name.into() }
     }
@@ -97,6 +124,8 @@ impl fmt::Display for TableError {
             TableError::ItemNotFound => write!(f, "item not found"),
             TableError::ItemAlreadyExists => write!(f, "item already exists"),
             TableError::IndexNotFound { name } => write!(f, "index not found: {}", name),
+            TableError::ConditionFailed => write!(f, "condition check failed"),
+            TableError::ConditionError(msg) => write!(f, "condition error: {}", msg),
             TableError::Storage(msg) => write!(f, "storage error: {}", msg),
             TableError::Encoding(msg) => write!(f, "encoding error: {}", msg),
         }
@@ -127,6 +156,12 @@ impl From<StorageError> for TableError {
 impl From<DecodeError> for TableError {
     fn from(e: DecodeError) -> Self {
         Self::Encoding(e.to_string())
+    }
+}
+
+impl From<EvalError> for TableError {
+    fn from(e: EvalError) -> Self {
+        Self::ConditionError(e.to_string())
     }
 }
 

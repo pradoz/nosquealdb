@@ -1,6 +1,6 @@
 use nosquealdb::{
     AttributeValue, GsiBuilder, Item, KeyCondition, KeySchema, KeyType, LsiBuilder, PrimaryKey,
-    QueryOptions, Table, TableBuilder, TableError,
+    QueryOptions, Table, TableBuilder,
 };
 use std::collections::BTreeMap;
 
