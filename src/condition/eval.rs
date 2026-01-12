@@ -107,6 +107,13 @@ fn eval_contains(attr: Option<&AttributeValue>, operand: &AttributeValue) -> Eva
                 Ok(false)
             }
         }
+        Some(AttributeValue::Ns(set)) => {
+            if let AttributeValue::N(s) = operand {
+                Ok(set.iter().any(|v| numbers_equal(v, n)))
+            } else {
+                Ok(false)
+            }
+        }
         Some(AttributeValue::Bs(set)) => {
             if let AttributeValue::B(b) = operand {
                 Ok(set.contains(b))
@@ -195,10 +202,7 @@ fn values_equal(a: &AttributeValue, b: &AttributeValue) -> bool {
 }
 
 fn numbers_equal(a: &str, b: &str) -> bool {
-    match (a.parse::<f64>(), b.parse::<f64>()) {
-        (Ok(x), Ok(y)) => (x - y).abs() < f64::EPSILON,
-        _ => a == b,
-    }
+    compare_numbers(a, b) == Ordering::Equal
 }
 
 fn compare_values(a: &AttributeValue, b: &AttributeValue) -> Result<Ordering, EvalError> {
@@ -215,7 +219,17 @@ fn compare_values(a: &AttributeValue, b: &AttributeValue) -> Result<Ordering, Ev
 
 fn compare_numbers(a: &str, b: &str) -> Ordering {
     match (a.parse::<f64>(), b.parse::<f64>()) {
-        (Ok(x), Ok(y)) => x.partial_cmp(&y).unwrap_or(Ordering::Equal),
+        (Ok(x), Ok(y)) => {
+            let diff = x - y;
+            if diff.abs()< f64::EPSILON {
+                Ordering::Equal
+            } else if diff < 0.0 {
+                Ordering::Less
+            } else {
+                Ordering::Greater
+            }
+        }
+        // fall back to string comparison when parsing fails
         _ => a.cmp(b),
     }
 }
