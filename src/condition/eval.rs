@@ -108,7 +108,7 @@ fn eval_contains(attr: Option<&AttributeValue>, operand: &AttributeValue) -> Eva
             }
         }
         Some(AttributeValue::Ns(set)) => {
-            if let AttributeValue::N(s) = operand {
+            if let AttributeValue::N(n) = operand {
                 Ok(set.iter().any(|v| numbers_equal(v, n)))
             } else {
                 Ok(false)
