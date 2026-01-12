@@ -610,6 +610,102 @@ mod tests {
         }
     }
 
+    mod return_values {
+        use super::*;
+
+        #[test]
+        fn put_return_none() {
+            let mut table = simple_table();
+            let item = Item::new()
+                .with_s("user_id", "user123")
+                .with_s("name", "Alice");
+
+            let result = table.put_item_with_return(item, ReturnValue::None).unwrap();
+            assert!(result.attributes.is_none());
+            assert!(!result.was_update);
+        }
+
+        #[test]
+        fn put_return_all_old() {
+            let mut table = simple_table();
+
+            // on create
+            let item1 = Item::new()
+                .with_s("user_id", "user123")
+                .with_s("name", "Alice");
+            let result = table
+                .put_item_with_return(item1, ReturnValue::AllOld)
+                .unwrap();
+            assert!(result.attributes.is_none());
+            assert!(!result.was_update);
+
+            // on overwrite
+            let item2 = Item::new()
+                .with_s("user_id", "user123")
+                .with_s("name", "Bob");
+            let result = table
+                .put_item_with_return(item2, ReturnValue::AllOld)
+                .unwrap();
+            assert!(result.was_update);
+            let old = result.attributes.unwrap();
+            assert_eq!(old.get("name"), Some(&AttributeValue::S("Alice".into())));
+        }
+
+        #[test]
+        fn put_return_all_new() {
+            let mut table = simple_table();
+            let item = Item::new()
+                .with_s("user_id", "user123")
+                .with_s("name", "Alice");
+
+            let result = table
+                .put_item_with_return(item.clone(), ReturnValue::AllNew)
+                .unwrap();
+            assert!(!result.was_update);
+
+            let new = result.attributes.unwrap();
+            assert_eq!(new.get("name"), Some(&AttributeValue::S("Alice".into())));
+        }
+
+        #[test]
+        fn delete_return_none() {
+            let mut table = simple_table();
+            table
+                .put_item(
+                    Item::new()
+                        .with_s("user_id", "user123")
+                        .with_s("name", "Alice"),
+                )
+                .unwrap();
+
+            let result = table
+                .delete_item_with_return(&PrimaryKey::simple("user123"), ReturnValue::None)
+                .unwrap();
+            assert!(result.attributes.is_none());
+            assert!(result.was_update);
+        }
+
+        #[test]
+        fn delete_return_all_old() {
+            let mut table = simple_table();
+            table
+                .put_item(
+                    Item::new()
+                        .with_s("user_id", "user123")
+                        .with_s("name", "Alice"),
+                )
+                .unwrap();
+
+            let result = table
+                .delete_item_with_return(&PrimaryKey::simple("user123"), ReturnValue::AllOld)
+                .unwrap();
+
+            assert!(result.was_update);
+            let old = result.attributes.unwrap();
+            assert_eq!(old.get("name"), Some(&AttributeValue::S("Alice".into())));
+        }
+    }
+
     mod indexes {
         use super::*;
         use crate::query::KeyCondition;
@@ -868,8 +964,6 @@ mod tests {
     }
 
     mod conditional {
-        use crate::condition::attr;
-
         use super::*;
 
         #[test]
