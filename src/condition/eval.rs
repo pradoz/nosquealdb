@@ -410,7 +410,6 @@ mod tests {
 
             let cond = attr("name").eq("Bob").or(attr("status").eq("inactive"));
             assert!(!evaluate(&cond, &item).unwrap());
-
         }
 
         #[test]
@@ -418,7 +417,8 @@ mod tests {
             let item = test_item();
             let cond = attr("name")
                 .eq("Alice")
-                .and(attr("id").ge(67i32)).not()
+                .and(attr("id").ge(67i32))
+                .not()
                 .or(attr("status").eq("admin"));
             assert!(evaluate(&cond, &item).unwrap());
         }
@@ -426,8 +426,8 @@ mod tests {
 
     mod nested_paths {
         use super::*;
-        use crate::condition::path::AttributePath;
         use crate::condition::expression::ConditionBuilder;
+        use crate::condition::path::AttributePath;
         use std::collections::BTreeMap;
 
         #[test]
@@ -438,7 +438,9 @@ mod tests {
             let item = Item::new().with("country", AttributeValue::M(address));
 
             let path = AttributePath::new("country").key("state");
-            assert!(evaluate(&ConditionBuilder::new(path.clone()).eq("California"), &item).unwrap());
+            assert!(
+                evaluate(&ConditionBuilder::new(path.clone()).eq("California"), &item).unwrap()
+            );
             assert!(!evaluate(&ConditionBuilder::new(path).eq("Florida"), &item).unwrap());
         }
 

@@ -67,7 +67,7 @@ pub enum EvalError {
     TypeMismatch {
         left: &'static str,
         right: &'static str,
-    }
+    },
 }
 
 impl std::fmt::Display for EvalError {
@@ -75,7 +75,7 @@ impl std::fmt::Display for EvalError {
         match self {
             Self::TypeMismatch { left, right } => {
                 write!(f, "cannot compare {} with {}", left, right)
-            },
+            }
         }
     }
 }

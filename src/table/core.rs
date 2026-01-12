@@ -452,8 +452,8 @@ impl TableBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::KeyType;
     use crate::condition::attr;
+    use crate::types::KeyType;
 
     fn simple_table() -> Table {
         Table::new("users", KeySchema::simple("user_id", KeyType::S))
@@ -905,7 +905,6 @@ mod tests {
             let result = table.delete_item_with_condition(&key, attr("status").eq("inactive"));
             assert!(result.is_ok());
             assert!(table.is_empty());
-
         }
     }
 
@@ -1069,9 +1068,7 @@ mod tests {
                     .unwrap();
             }
 
-            let items = table
-                .scan_with_filter(attr("status").eq("active"))
-                .unwrap();
+            let items = table.scan_with_filter(attr("status").eq("active")).unwrap();
             assert_eq!(items.len(), 5);
         }
     }

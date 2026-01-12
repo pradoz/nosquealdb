@@ -220,12 +220,7 @@ mod tests {
         #[test]
         fn out_of_bounds_returns_none() {
             let item = Item::new().with_l("list", vec![AttributeValue::N("0".into())]);
-            assert!(
-                AttributePath::new("list")
-                    .index(1)
-                    .resolve(&item)
-                    .is_none()
-            );
+            assert!(AttributePath::new("list").index(1).resolve(&item).is_none());
         }
     }
 }
