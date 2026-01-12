@@ -6,7 +6,10 @@ use crate::error::{TableError, TableResult};
 use crate::index::{GlobalSecondaryIndex, GsiBuilder, LocalSecondaryIndex, LsiBuilder};
 use crate::query::{KeyCondition, QueryExecutor, QueryOptions, QueryResult};
 use crate::storage::{MemoryStorage, Storage};
-use crate::types::{AttributeValue, Item, KeySchema, PrimaryKey, decode, encode};
+use crate::types::{
+    AttributeValue, Item, KeySchema, KeyValidationError, PrimaryKey, ReturnValue, WriteResult,
+    decode, encode,
+};
 
 #[derive(Debug)]
 pub struct Table {
@@ -107,7 +110,16 @@ impl Table {
 
     // operations
     pub fn put_item(&mut self, item: Item) -> TableResult<Option<Item>> {
-        self.put_item_internal(item, None)
+        let result = self.put_item_with_return(item, ReturnValue::AllOld)?;
+        Ok(result.attributes)
+    }
+
+    pub fn put_item_with_return(
+        &mut self,
+        item: Item,
+        return_value: ReturnValue,
+    ) -> TableResult<WriteResult> {
+        self.put_item_internal(item, None, return_value)
     }
 
     pub fn put_item_with_condition(
@@ -115,18 +127,30 @@ impl Table {
         item: Item,
         condition: Condition,
     ) -> TableResult<Option<Item>> {
-        self.put_item_internal(item, Some(condition))
+        let result =
+            self.put_item_with_condition_and_return(item, condition, ReturnValue::AllOld)?;
+        Ok(result.attributes)
+    }
+
+    pub fn put_item_with_condition_and_return(
+        &mut self,
+        item: Item,
+        condition: Condition,
+        return_value: ReturnValue,
+    ) -> TableResult<WriteResult> {
+        self.put_item_internal(item, Some(condition), return_value)
     }
 
     fn put_item_internal(
         &mut self,
         item: Item,
         condition: Option<Condition>,
-    ) -> TableResult<Option<Item>> {
+        return_value: ReturnValue,
+    ) -> TableResult<WriteResult> {
         let _ = item.validate_key(&self.schema)?;
 
         let pk = item.extract_key(&self.schema).ok_or_else(|| {
-            TableError::InvalidKey(crate::types::KeyValidationError::MissingAttribute {
+            TableError::InvalidKey(KeyValidationError::MissingAttribute {
                 name: self.schema.pk_name().to_string(),
             })
         })?;
@@ -141,11 +165,21 @@ impl Table {
             }
         }
 
+        let was_update = old_item.is_some();
         let encoded = self.encode_item(&item)?;
         self.storage.put(&storage_key, encoded)?;
         self.update_indexes_on_put(&pk, &item);
 
-        Ok(old_item)
+        let attributes = match return_value {
+            ReturnValue::None => None,
+            ReturnValue::AllOld => old_item,
+            ReturnValue::AllNew => Some(item),
+        };
+
+        Ok(WriteResult {
+            attributes,
+            was_update,
+        })
     }
 
     pub fn put_item_if_not_exists(&mut self, item: Item) -> TableResult<()> {
@@ -176,7 +210,16 @@ impl Table {
     }
 
     pub fn delete_item(&mut self, key: &PrimaryKey) -> TableResult<Option<Item>> {
-        self.delete_item_internal(key, None)
+        let result = self.delete_item_with_return(key, ReturnValue::AllOld)?;
+        Ok(result.attributes)
+    }
+
+    pub fn delete_item_with_return(
+        &mut self,
+        key: &PrimaryKey,
+        return_value: ReturnValue,
+    ) -> TableResult<WriteResult> {
+        self.delete_item_internal(key, None, return_value)
     }
 
     pub fn delete_item_with_condition(
@@ -184,14 +227,26 @@ impl Table {
         key: &PrimaryKey,
         condition: Condition,
     ) -> TableResult<Option<Item>> {
-        self.delete_item_internal(key, Some(condition))
+        let result =
+            self.delete_item_with_condition_and_return(key, condition, ReturnValue::AllOld)?;
+        Ok(result.attributes)
+    }
+
+    pub fn delete_item_with_condition_and_return(
+        &mut self,
+        key: &PrimaryKey,
+        condition: Condition,
+        return_value: ReturnValue,
+    ) -> TableResult<WriteResult> {
+        self.delete_item_internal(key, Some(condition), return_value)
     }
 
     fn delete_item_internal(
         &mut self,
         key: &PrimaryKey,
         condition: Option<Condition>,
-    ) -> TableResult<Option<Item>> {
+        return_value: ReturnValue,
+    ) -> TableResult<WriteResult> {
         let storage_key = key.to_storage_key();
         let old_item = self.get_item_by_storage_key(&storage_key)?;
 
@@ -202,13 +257,24 @@ impl Table {
             }
         }
 
+        let was_update = old_item.is_some();
+
         self.storage.delete(&storage_key)?;
 
-        if old_item.is_some() {
+        if was_update {
             self.update_indexes_on_delete(key);
         }
 
-        Ok(old_item)
+        let attributes = match return_value {
+            ReturnValue::None => None,
+            ReturnValue::AllOld => old_item,
+            ReturnValue::AllNew => None, // Delete has no "new" item
+        };
+
+        Ok(WriteResult {
+            attributes,
+            was_update,
+        })
     }
 
     pub fn query(&self, condition: KeyCondition) -> TableResult<QueryResult> {

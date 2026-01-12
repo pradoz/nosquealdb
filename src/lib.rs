@@ -14,7 +14,7 @@ pub use storage::{MemoryStorage, Storage, StorageExt};
 pub use table::{Table, TableBuilder};
 pub use types::{
     AttributeValue, DecodeError, Item, KeyAttribute, KeySchema, KeyType, KeyValidationError,
-    KeyValue, PrimaryKey,
+    KeyValue, PrimaryKey, ReturnValue, WriteResult,
 };
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

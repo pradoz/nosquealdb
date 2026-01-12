@@ -221,7 +221,7 @@ fn compare_numbers(a: &str, b: &str) -> Ordering {
     match (a.parse::<f64>(), b.parse::<f64>()) {
         (Ok(x), Ok(y)) => {
             let diff = x - y;
-            if diff.abs()< f64::EPSILON {
+            if diff.abs() < f64::EPSILON {
                 Ordering::Equal
             } else if diff < 0.0 {
                 Ordering::Less
