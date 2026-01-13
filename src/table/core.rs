@@ -1,15 +1,15 @@
 use std::collections::BTreeMap;
 
-use crate::KeyAttribute;
 use crate::condition::{Condition, evaluate};
 use crate::error::{TableError, TableResult};
 use crate::index::{GlobalSecondaryIndex, GsiBuilder, LocalSecondaryIndex, LsiBuilder};
 use crate::query::{KeyCondition, QueryExecutor, QueryOptions, QueryResult};
 use crate::storage::{MemoryStorage, Storage};
 use crate::types::{
-    AttributeValue, Item, KeySchema, KeyValidationError, PrimaryKey, ReturnValue, WriteResult,
-    decode, encode,
+    AttributeValue, Item, KeyAttribute, KeySchema, KeyValidationError, PrimaryKey, ReturnValue,
+    WriteResult, decode, encode,
 };
+use crate::update::{UpdateExecutor, UpdateExpression};
 
 #[derive(Debug)]
 pub struct Table {
@@ -377,6 +377,96 @@ impl Table {
         lsi.query_with_options(condition, options)
     }
 
+    pub fn update_item(
+        &mut self,
+        key: &PrimaryKey,
+        expression: UpdateExpression,
+    ) -> TableResult<Option<Item>> {
+        let result = self.update_item_with_return(key, expression, ReturnValue::AllNew)?;
+        Ok(result.attributes)
+    }
+
+    pub fn update_item_with_return(
+        &mut self,
+        key: &PrimaryKey,
+        expression: UpdateExpression,
+        return_value: ReturnValue,
+    ) -> TableResult<WriteResult> {
+        self.update_item_internal(key, expression, None, return_value)
+    }
+
+    pub fn update_item_with_condition(
+        &mut self,
+        key: &PrimaryKey,
+        expression: UpdateExpression,
+        condition: Condition,
+    ) -> TableResult<Option<Item>> {
+        let result = self.update_item_with_condition_and_return(
+            key,
+            expression,
+            condition,
+            ReturnValue::AllNew,
+        )?;
+        Ok(result.attributes)
+    }
+
+    pub fn update_item_with_condition_and_return(
+        &mut self,
+        key: &PrimaryKey,
+        expression: UpdateExpression,
+        condition: Condition,
+        return_value: ReturnValue,
+    ) -> TableResult<WriteResult> {
+        self.update_item_internal(key, expression, Some(condition), return_value)
+    }
+
+    fn update_item_internal(
+        &mut self,
+        key: &PrimaryKey,
+        expression: UpdateExpression,
+        condition: Option<Condition>,
+        return_value: ReturnValue,
+    ) -> TableResult<WriteResult> {
+        let storage_key = key.to_storage_key();
+        let old_item = self
+            .get_item_by_storage_key(&storage_key)?
+            .ok_or(TableError::ItemNotFound)?;
+
+        if let Some(cond) = condition {
+            if !evaluate(&cond, &old_item)? {
+                return Err(TableError::ConditionFailed);
+            }
+        }
+
+        let executor = UpdateExecutor::new();
+        let new_item = executor.execute(old_item.clone(), &expression)?;
+
+        // failure checks
+        let new_key = new_item.extract_key(&self.schema).ok_or_else(|| {
+            TableError::UpdateError("update removed key attributes".to_string())
+        })  ?;
+
+        if &new_key != key {
+            return Err(TableError::UpdateError("cannot modify key attributes".to_string()));
+        }
+
+        // save updated item
+        let encoded = self.encode_item(&new_item)?;
+        self.storage.put(&storage_key, encoded)?;
+        self.update_indexes_on_put(key, &new_item);
+
+        let attributes = match return_value {
+            ReturnValue::AllNew => Some(new_item),
+            ReturnValue::AllOld => Some(old_item),
+            ReturnValue::None => None,
+        };
+
+        Ok(WriteResult {
+            attributes,
+            was_update: true,
+        })
+    }
+
     pub fn scan(&self) -> TableResult<Vec<Item>> {
         let mut items = Vec::new();
 
@@ -607,6 +697,53 @@ mod tests {
             let key = PrimaryKey::simple(test_key_name);
             let curr = table.get_item(&key).unwrap().unwrap();
             assert_eq!(curr.get("name"), Some(&AttributeValue::S("Bob".into())));
+        }
+    }
+
+    mod update_item {
+        use super::*;
+        use crate::update::UpdateExpression;
+
+        #[test]
+        fn simple() {
+            let mut table = simple_table();
+            let update_expr = UpdateExpression::new();
+
+            let item = Item::new()
+                .with_s("user_id", "user123")
+                .with_s("name", "Alice")
+                .with_n("count", 42);
+            table.put_item(item.clone()).unwrap();
+
+            let key = PrimaryKey::simple("user123");
+            let result = table.update_item(&key, update_expr.set("name", "Bob").add("count", 5i32)).unwrap().unwrap();
+
+            assert_eq!(result.get("name"), Some(&AttributeValue::S("Bob".into())));
+            assert_eq!(result.get("count"), Some(&AttributeValue::N("47".into())));
+        }
+
+        #[test]
+        fn nonexistent_fails() {
+            let mut table = simple_table();
+            let key = PrimaryKey::simple("nonexistent");
+            let result = table.update_item(&key, UpdateExpression::new().set("name", "Bob"));
+            assert!(result.is_err());
+            assert!(result.unwrap_err().is_not_found());
+        }
+
+        #[test]
+        fn modify_key_fails() {
+            let mut table = simple_table();
+            let item = Item::new()
+                .with_s("user_id", "user123")
+                .with_s("name", "Alice")
+                .with_n("count", 42);
+            table.put_item(item.clone()).unwrap();
+
+            let key = PrimaryKey::simple("user123");
+            let result = table.update_item(&key, UpdateExpression::new().set("user_id", "fail"));
+            assert!(result.is_err());
+            assert!(result.unwrap_err().is_update_error());
         }
     }
 

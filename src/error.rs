@@ -92,6 +92,7 @@ pub enum TableError {
     IndexNotFound { name: String },
     ConditionFailed,
     ConditionError(String),
+    UpdateError(String),
     Storage(String),
     Encoding(String),
 }
@@ -106,14 +107,20 @@ impl TableError {
     pub fn is_invalid_key(&self) -> bool {
         matches!(self, Self::InvalidKey(_))
     }
-    pub fn is_index_not_found(&self) -> bool {
-        matches!(self, Self::IndexNotFound { .. })
-    }
     pub fn is_condition_failed(&self) -> bool {
         matches!(self, Self::ConditionFailed)
     }
+    pub fn is_index_not_found(&self) -> bool {
+        matches!(self, Self::IndexNotFound { .. })
+    }
     pub fn index_not_found(name: impl Into<String>) -> Self {
         Self::IndexNotFound { name: name.into() }
+    }
+    pub fn is_update_error(&self) -> bool {
+        matches!(self, Self::UpdateError { .. })
+    }
+    pub fn update_error(msg: impl Into<String>) -> Self {
+        Self::UpdateError(msg.into())
     }
 }
 
@@ -126,6 +133,7 @@ impl fmt::Display for TableError {
             TableError::IndexNotFound { name } => write!(f, "index not found: {}", name),
             TableError::ConditionFailed => write!(f, "condition check failed"),
             TableError::ConditionError(msg) => write!(f, "condition error: {}", msg),
+            TableError::UpdateError(msg) => write!(f, "update error: {}", msg),
             TableError::Storage(msg) => write!(f, "storage error: {}", msg),
             TableError::Encoding(msg) => write!(f, "encoding error: {}", msg),
         }
