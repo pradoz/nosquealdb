@@ -202,6 +202,125 @@ mod query {
     }
 }
 
+mod update {
+    use super::*;
+    use nosquealdb::UpdateExpression;
+    use nosquealdb::condition::attr;
+
+    fn update_expr() -> UpdateExpression {
+        UpdateExpression::new()
+    }
+
+    #[test]
+    fn indexes() {
+        let mut table = TableBuilder::new(
+            "test",
+            KeySchema::composite("pk", KeyType::S, "sk", KeyType::S),
+        )
+        .with_gsi(GsiBuilder::new(
+            "by-status",
+            KeySchema::simple("status", KeyType::S),
+        ))
+        .build();
+
+        // set initial state
+        table
+            .put_item(
+                Item::new()
+                    .with_s("pk", "user1")
+                    .with_s("sk", "order1")
+                    .with_s("status", "pending"),
+            )
+            .unwrap();
+
+        // verify initial state
+        let result = table
+            .query_gsi("by-status", KeyCondition::pk("pending"))
+            .unwrap();
+        assert_eq!(result.count, 1);
+
+        // update state
+        let key = PrimaryKey::composite("user1", "order1");
+        table
+            .update_item(&key, update_expr().set("status", "shipped"))
+            .unwrap();
+
+        // verify updated state
+        let result = table
+            .query_gsi("by-status", KeyCondition::pk("pending"))
+            .unwrap();
+        assert_eq!(result.count, 0);
+        let result = table
+            .query_gsi("by-status", KeyCondition::pk("shipped"))
+            .unwrap();
+        assert_eq!(result.count, 1);
+    }
+
+    #[test]
+    fn atomic_counter() {
+        let mut table = Table::new("test", KeySchema::simple("pk", KeyType::S));
+
+        table
+            .put_item(Item::new().with_s("pk", "view_count").with_n("value", 0))
+            .unwrap();
+
+        let key = PrimaryKey::simple("view_count");
+        for _ in 0..10 {
+            table
+                .update_item(&key, update_expr().add("value", 1i32))
+                .unwrap();
+        }
+
+        let item = table.get_item(&key).unwrap().unwrap();
+        assert_eq!(item.get("value"), Some(&AttributeValue::N("10".into())));
+    }
+
+    #[test]
+    fn optimistic_locking() {
+        let mut table = Table::new("test", KeySchema::simple("id", KeyType::S));
+
+        table
+            .put_item(
+                Item::new()
+                    .with_s("id", "doc1")
+                    .with_s("content", "lorem ipsum")
+                    .with_n("version", 1),
+            )
+            .unwrap();
+
+        let key = PrimaryKey::simple("doc1");
+
+        // update with correct version, should succeed
+        let result = table.update_item_with_condition(
+            &key,
+            update_expr()
+                .set("content", "dolor something")
+                .set("version", 2i32),
+            attr("version").eq(1i32),
+        );
+        assert!(result.is_ok());
+
+        // update with stale version, should fail
+        let result = table.update_item_with_condition(
+            &key,
+            update_expr()
+                .set("content", "stale text")
+                .set("version", 2i32),
+            attr("version").eq(1i32),
+        );
+        assert!(result.is_err());
+        assert!(result.unwrap_err().is_condition_failed());
+
+        // content reflects first (successful) update
+        let item = table.get_item(&key).unwrap().unwrap();
+        assert_eq!(
+            item.get("content"),
+            Some(&AttributeValue::S("dolor something".into()))
+        );
+        assert_eq!(item.get("version"), Some(&AttributeValue::N("2".into())));
+    }
+}
+
 mod gsi {
     use super::*;
 

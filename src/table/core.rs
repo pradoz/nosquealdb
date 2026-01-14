@@ -442,12 +442,14 @@ impl Table {
         let new_item = executor.execute(old_item.clone(), &expression)?;
 
         // failure checks
-        let new_key = new_item.extract_key(&self.schema).ok_or_else(|| {
-            TableError::UpdateError("update removed key attributes".to_string())
-        })  ?;
+        let new_key = new_item
+            .extract_key(&self.schema)
+            .ok_or_else(|| TableError::UpdateError("update removed key attributes".to_string()))?;
 
         if &new_key != key {
-            return Err(TableError::UpdateError("cannot modify key attributes".to_string()));
+            return Err(TableError::UpdateError(
+                "cannot modify key attributes".to_string(),
+            ));
         }
 
         // save updated item
@@ -716,7 +718,10 @@ mod tests {
             table.put_item(item.clone()).unwrap();
 
             let key = PrimaryKey::simple("user123");
-            let result = table.update_item(&key, update_expr.set("name", "Bob").add("count", 5i32)).unwrap().unwrap();
+            let result = table
+                .update_item(&key, update_expr.set("name", "Bob").add("count", 5i32))
+                .unwrap()
+                .unwrap();
 
             assert_eq!(result.get("name"), Some(&AttributeValue::S("Bob".into())));
             assert_eq!(result.get("count"), Some(&AttributeValue::N("47".into())));

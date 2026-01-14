@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use crate::KeyValidationError;
 use crate::condition::{AttributePath, PathSegment};
@@ -79,7 +79,9 @@ impl UpdateExecutor {
         let root = match &segments[0] {
             PathSegment::Key(k) => k.clone(),
             PathSegment::Index(_) => {
-                return Err(TableError::update_error("path must start with attribute name"));
+                return Err(TableError::update_error(
+                    "path must start with attribute name",
+                ));
             }
         };
 
@@ -320,15 +322,22 @@ fn add_numbers(a: &str, b: &str) -> TableResult<String> {
     }
 
     // fall back to float
-    let x: f64 = a.parse().map_err(|_| TableError::update_error("invalid number"))?;
-    let y: f64 = b.parse().map_err(|_| TableError::update_error("invalid number"))?;
+    let x: f64 = a
+        .parse()
+        .map_err(|_| TableError::update_error("invalid number"))?;
+    let y: f64 = b
+        .parse()
+        .map_err(|_| TableError::update_error("invalid number"))?;
     Ok((x + y).to_string())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::update::expression::update;
+
+    fn update_expr() -> UpdateExpression {
+        UpdateExpression::new()
+    }
 
     fn test_item() -> Item {
         Item::new()
@@ -346,7 +355,7 @@ mod tests {
             let executor = UpdateExecutor::new();
             let item = test_item();
             let result = executor
-                .execute(item, &update().set("email", "alice@example.com"))
+                .execute(item, &update_expr().set("email", "alice@example.com"))
                 .unwrap();
             assert_eq!(
                 result.get("email"),
@@ -363,7 +372,7 @@ mod tests {
             let executor = UpdateExecutor::new();
             let item = test_item();
             let result = executor
-                .execute(item, &update().set("name", "Bob"))
+                .execute(item, &update_expr().set("name", "Bob"))
                 .unwrap();
             assert_eq!(result.get("name"), Some(&AttributeValue::S("Bob".into())));
         }
@@ -377,7 +386,7 @@ mod tests {
             let result = executor
                 .execute(
                     item.clone(),
-                    &update().set_if_not_exists("email", "test@email.com"),
+                    &update_expr().set_if_not_exists("email", "test@email.com"),
                 )
                 .unwrap();
             assert_eq!(
@@ -387,7 +396,10 @@ mod tests {
 
             // should skip existing
             let result = executor
-                .execute(item.clone(), &update().set_if_not_exists("name", "Bob"))
+                .execute(
+                    item.clone(),
+                    &update_expr().set_if_not_exists("name", "Bob"),
+                )
                 .unwrap();
             assert_eq!(result.get("name"), Some(&AttributeValue::S("Alice".into())));
         }
@@ -401,7 +413,7 @@ mod tests {
 
             let path = AttributePath::new("address").key("zip");
             let result = executor
-                .execute(item.clone(), &update().set(path, "44444"))
+                .execute(item.clone(), &update_expr().set(path, "44444"))
                 .unwrap();
 
             let address = result.get("address").unwrap().as_m().unwrap();
@@ -423,7 +435,7 @@ mod tests {
 
             // should create the attribute
             let result = executor
-                .execute(item.clone(), &update().add("new_count_attr", 5i32))
+                .execute(item.clone(), &update_expr().add("new_count_attr", 5i32))
                 .unwrap();
             assert_eq!(
                 result.get("new_count_attr"),
@@ -438,13 +450,13 @@ mod tests {
 
             // positive number should add
             let result = executor
-                .execute(item.clone(), &update().add("count", 5i32))
+                .execute(item.clone(), &update_expr().add("count", 5i32))
                 .unwrap();
             assert_eq!(result.get("count"), Some(&AttributeValue::N("15".into())));
 
             // negative number should subtract
             let result = executor
-                .execute(item.clone(), &update().add("count", -3i32))
+                .execute(item.clone(), &update_expr().add("count", -3i32))
                 .unwrap();
             assert_eq!(result.get("count"), Some(&AttributeValue::N("7".into())));
         }
@@ -460,7 +472,7 @@ mod tests {
             let result = executor
                 .execute(
                     item,
-                    &update().add(
+                    &update_expr().add(
                         "tags",
                         AttributeValue::Ss(["c", "d"].into_iter().map(String::from).collect()),
                     ),
@@ -478,7 +490,7 @@ mod tests {
         fn wrong_type_fails() {
             let executor = UpdateExecutor::new();
             let item = test_item();
-            let result = executor.execute(item.clone(), &update().add("name", 42i32));
+            let result = executor.execute(item.clone(), &update_expr().add("name", 42i32));
             assert!(result.is_err());
         }
     }
@@ -491,7 +503,7 @@ mod tests {
             let executor = UpdateExecutor::new();
             let item = test_item();
             let result = executor
-                .execute(item.clone(), &update().remove("name"))
+                .execute(item.clone(), &update_expr().remove("name"))
                 .unwrap();
             assert!(result.get("name").is_none());
             assert_eq!(result.get("pk"), Some(&AttributeValue::S("test".into())));
@@ -505,7 +517,7 @@ mod tests {
 
             // should be a noop
             let result = executor
-                .execute(item.clone(), &update().remove("nonexistent"))
+                .execute(item.clone(), &update_expr().remove("nonexistent"))
                 .unwrap();
             assert_eq!(result.len(), item.len());
         }
@@ -520,7 +532,7 @@ mod tests {
             let item = Item::new().with_s("pk", "test").with_m("data", inner);
 
             let path = AttributePath::new("data").key("a");
-            let result = executor.execute(item, &update().remove(path)).unwrap();
+            let result = executor.execute(item, &update_expr().remove(path)).unwrap();
 
             let data = result.get("data").unwrap().as_m().unwrap();
             assert!(data.get("a").is_none());
@@ -538,7 +550,7 @@ mod tests {
 
             // should perform a noop
             let result = executor
-                .execute(item.clone(), &update().delete("nonexistent", "abc"))
+                .execute(item.clone(), &update_expr().delete("nonexistent", "abc"))
                 .unwrap();
             assert_eq!(result.len(), item.len());
         }
@@ -554,7 +566,7 @@ mod tests {
             let result = executor
                 .execute(
                     item,
-                    &update().delete(
+                    &update_expr().delete(
                         "tags",
                         AttributeValue::Ss(["b"].into_iter().map(String::from).collect()),
                     ),

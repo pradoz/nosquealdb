@@ -100,24 +100,24 @@ impl UpdateExpression {
     }
 }
 
-pub fn update() -> UpdateExpression {
-    UpdateExpression::new()
-}
-
 #[cfg(test)]
 mod test {
     use super::*;
 
+    fn update_expr() -> UpdateExpression {
+        UpdateExpression::new()
+    }
+
     #[test]
     fn empty() {
-        let expr = update();
+        let expr = update_expr();
         assert!(expr.is_empty());
         assert_eq!(expr.len(), 0);
     }
 
     #[test]
     fn builder() {
-        let expr = update()
+        let expr = update_expr()
             .set("name", "Alice")
             .set("id", 42i32)
             .remove("foo")
