@@ -4,10 +4,14 @@ use super::request::{
     DeleteRequest, GetRequest, PutRequest, QueryRequest, ScanRequest, UpdateRequest,
 };
 use crate::condition::{Condition, evaluate};
-use crate::error::{TableError, TableResult};
+use crate::error::{TableError, TableResult, TransactionCancelReason};
 use crate::index::{GlobalSecondaryIndex, GsiBuilder, LocalSecondaryIndex, LsiBuilder};
 use crate::query::{KeyCondition, QueryExecutor, QueryOptions, QueryResult};
 use crate::storage::{MemoryStorage, Storage};
+use crate::transaction::{
+    TransactGetRequest, TransactGetResult, TransactWriteItem, TransactWriteRequest,
+    TransactionExecutor, TransactionFailureReason,
+};
 use crate::types::{
     AttributeValue, Item, KeyAttribute, KeySchema, KeyValidationError, PrimaryKey, ReturnValue,
     WriteResult, decode, encode,
@@ -254,6 +258,38 @@ impl Table {
         self.scan(ScanRequest::new())
     }
 
+    pub fn transact_write(&mut self, request: impl Into<TransactWriteRequest>) -> TableResult<()> {
+        let request = request.into();
+        if request.is_empty() {
+            return Ok(());
+        }
+
+        // validate all operations
+        let executor = TransactionExecutor::new();
+        let validation =
+            executor.validate_write(&request.items, &self.schema, |key| self.get_item(key));
+
+        if let Err(failure) = validation {
+            return Err(self.convert_failure_to_error(failure));
+        }
+
+        // apply all operations
+        for item in request.items {
+            self.apply_transact_write_item(item)?;
+        }
+
+        Ok(())
+    }
+
+    pub fn transact_get(
+        &self,
+        request: impl Into<TransactGetRequest>,
+    ) -> TableResult<TransactGetResult> {
+        let request = request.into();
+        let executor = TransactionExecutor::new();
+        executor.execute_get(&request.items, |key| self.get_item(key))
+    }
+
     // internal operations
     fn put_internal(
         &mut self,
@@ -416,7 +452,7 @@ impl Table {
         })
     }
 
-    pub fn query_internal(
+    fn query_internal(
         &self,
         key_condition: KeyCondition,
         filter: Option<Condition>,
@@ -441,6 +477,52 @@ impl Table {
         Ok(result)
     }
 
+    fn apply_transact_write_item(&mut self, item: TransactWriteItem) -> TableResult<()> {
+        match item {
+            TransactWriteItem::Put { item, .. } => {
+                self.put_item(item)?;
+            }
+            TransactWriteItem::Update {
+                key, expression, ..
+            } => {
+                self.update_item(&key, expression)?;
+            }
+            TransactWriteItem::Delete { key, .. } => {
+                self.delete_item(&key)?;
+            }
+            TransactWriteItem::ConditionCheck { .. } => {
+                // condition is already checked during validation
+            }
+        }
+        Ok(())
+    }
+
+    fn convert_failure_to_error(&self, failure: TransactionFailureReason) -> TableError {
+        let reason = match failure {
+            TransactionFailureReason::ConditionCheckFailed { index } => {
+                TransactionCancelReason::ConditionCheckFailed { index }
+            }
+            TransactionFailureReason::ItemNotFound { index } => {
+                TransactionCancelReason::ItemNotFound { index }
+            }
+            TransactionFailureReason::KeyModification { index } => {
+                TransactionCancelReason::ValidationError {
+                    index,
+                    message: "cannot modify key attributes".to_string(),
+                }
+            }
+            TransactionFailureReason::DuplicateItem { index } => {
+                TransactionCancelReason::DuplicateItem { index }
+            }
+            TransactionFailureReason::InvalidKey { index, message } => {
+                TransactionCancelReason::ValidationError { index, message }
+            }
+        };
+
+        TableError::transaction_canceled(vec![reason])
+    }
+
+    // non-operation utilities
     fn encode_item(&self, item: &Item) -> TableResult<Vec<u8>> {
         let map: BTreeMap<String, AttributeValue> = item
             .iter()
@@ -1248,6 +1330,182 @@ mod tests {
             // with limit
             let items = table.scan(ScanRequest::new().limit(3)).unwrap();
             assert_eq!(items.len(), 3);
+        }
+    }
+
+    mod transactions {
+        use super::*;
+        use crate::transaction::TransactGetItem;
+
+        #[test]
+        fn empty() {
+            let mut table = simple_table();
+            let result = table.transact_write(TransactWriteRequest::new());
+            assert!(result.is_ok());
+        }
+
+        #[test]
+        fn write() {
+            let mut table = simple_table();
+
+            // single write
+            let result = table.transact_write(
+                TransactWriteRequest::new().put(
+                    Item::new()
+                        .with_s("user_id", "user1")
+                        .with_s("name", "Alice"),
+                ),
+            );
+            assert!(result.is_ok());
+            assert_eq!(table.len(), 1);
+
+            // multiple writes
+            let result = table.transact_write(
+                TransactWriteRequest::new()
+                    .put(Item::new().with_s("user_id", "user2").with_s("name", "Bob"))
+                    .put(
+                        Item::new()
+                            .with_s("user_id", "user3")
+                            .with_s("name", "John"),
+                    ),
+            );
+            assert!(result.is_ok());
+            assert_eq!(table.len(), 3);
+        }
+
+        #[test]
+        fn get() {
+            let mut table = simple_table();
+            table
+                .put_item(Item::new().with_s("user_id", "user1").with_n("value", 1))
+                .unwrap();
+            table
+                .put_item(Item::new().with_s("user_id", "user2").with_n("value", 2))
+                .unwrap();
+
+            let result = table
+                .transact_get(
+                    TransactGetRequest::new()
+                        .get(PrimaryKey::simple("user1"))
+                        .get(PrimaryKey::simple("user2")),
+                )
+                .unwrap();
+
+            assert_eq!(result.len(), 2);
+            assert_eq!(result.found_count(), 2);
+            assert_eq!(
+                result.get(0).unwrap().get("value"),
+                Some(&AttributeValue::N("1".into()))
+            );
+
+            // missing item should not fail and return accurate results
+            let result = table
+                .transact_get(
+                    TransactGetRequest::new()
+                        .get(PrimaryKey::simple("user1"))
+                        .get(PrimaryKey::simple("missing")),
+                )
+                .unwrap();
+
+            assert_eq!(result.len(), 2);
+            assert_eq!(result.found_count(), 1);
+            assert!(result.get(0).is_some());
+            assert!(result.get(1).is_none());
+        }
+
+        #[test]
+        fn mixed_operations() {
+            let mut table = simple_table();
+            table
+                .put_item(Item::new().with_s("user_id", "user1").with_n("count", 100))
+                .unwrap();
+
+            // write + update
+            let result = table.transact_write(
+                TransactWriteRequest::new()
+                    .put(Item::new().with_s("user_id", "user2").with_n("count", 200))
+                    .update(
+                        PrimaryKey::simple("user1"),
+                        UpdateExpression::new().add("count", 42i32),
+                    ),
+            );
+            assert!(result.is_ok());
+            assert_eq!(table.len(), 2);
+
+            // get
+            let item = table
+                .get_item(&PrimaryKey::simple("user1"))
+                .unwrap()
+                .unwrap();
+            assert_eq!(item.get("count"), Some(&AttributeValue::N("142".into())));
+        }
+
+        #[test]
+        fn reject_duplicate_keys() {
+            let mut table = simple_table();
+
+            let result = table.transact_write(
+                TransactWriteRequest::new()
+                    .put(Item::new().with_s("user_id", "foo"))
+                    .put(Item::new().with_s("user_id", "foo")),
+            );
+            assert!(result.is_err());
+            assert!(result.unwrap_err().is_transaction_canceled());
+            assert!(table.is_empty());
+        }
+
+        #[test]
+        fn condition_check_failure_rolls_back() {
+            let mut table = simple_table();
+            table
+                .put_item(
+                    Item::new()
+                        .with_s("user_id", "user1")
+                        .with_s("status", "inactive"),
+                )
+                .unwrap();
+
+            let result = table.transact_write(
+                TransactWriteRequest::new()
+                    .put(Item::new().with_s("user_id", "user2"))
+                    .condition_check(PrimaryKey::simple("user1"), attr("status").eq("active")),
+            );
+            assert!(result.is_err());
+            assert!(result.unwrap_err().is_transaction_canceled());
+
+            // transaction failed, user2 should not be created
+            table
+                .get_item(&PrimaryKey::simple("user1"))
+                .unwrap()
+                .unwrap();
+            assert_eq!(table.len(), 1);
+            assert!(
+                table
+                    .get_item(&PrimaryKey::simple("user2"))
+                    .unwrap()
+                    .is_none()
+            );
+        }
+
+        #[test]
+        fn from_vec() {
+            let mut table = simple_table();
+
+            let items = vec![
+                TransactWriteItem::put(Item::new().with_s("user_id", "user1")),
+                TransactWriteItem::put(Item::new().with_s("user_id", "user2")),
+            ];
+
+            let result = table.transact_write(items);
+            assert!(result.is_ok());
+            assert_eq!(table.len(), 2);
+
+            let items = vec![
+                TransactGetItem::get(PrimaryKey::simple("user1")),
+                TransactGetItem::get(PrimaryKey::simple("user2")),
+            ];
+            let result = table.transact_get(items).unwrap();
+            assert_eq!(result.found_count(), 2);
         }
     }
 }

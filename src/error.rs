@@ -84,15 +84,58 @@ impl std::error::Error for EvalError {}
 
 pub type EvalResult = Result<bool, EvalError>;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TransactionCancelReason {
+    ConditionCheckFailed { index: usize },
+    ItemNotFound { index: usize },
+    DuplicateItem { index: usize },
+    ValidationError { index: usize, message: String },
+}
+
+impl TransactionCancelReason {
+    pub fn index(&self) -> usize {
+        match self {
+            Self::ConditionCheckFailed { index } => *index,
+            Self::ItemNotFound { index } => *index,
+            Self::DuplicateItem { index } => *index,
+            Self::ValidationError { index, .. } => *index,
+        }
+    }
+}
+
+impl fmt::Display for TransactionCancelReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ConditionCheckFailed { index } => {
+                write!(f, "condition check failed at index {}", index)
+            }
+            Self::ItemNotFound { index } => {
+                write!(f, "item not found at index {}", index)
+            }
+            Self::DuplicateItem { index } => {
+                write!(f, "duplicate item at index {}", index)
+            }
+            Self::ValidationError { index, message } => {
+                write!(f, "validation error at index {}: {}", index, message)
+            }
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum TableError {
     InvalidKey(KeyValidationError),
     ItemNotFound,
     ItemAlreadyExists,
-    IndexNotFound { name: String },
+    IndexNotFound {
+        name: String,
+    },
     ConditionFailed,
     ConditionError(String),
     UpdateError(String),
+    TransactionCanceled {
+        reasons: Vec<TransactionCancelReason>,
+    },
     Storage(String),
     Encoding(String),
 }
@@ -113,14 +156,27 @@ impl TableError {
     pub fn is_index_not_found(&self) -> bool {
         matches!(self, Self::IndexNotFound { .. })
     }
+    pub fn is_update_error(&self) -> bool {
+        matches!(self, Self::UpdateError(_))
+    }
     pub fn index_not_found(name: impl Into<String>) -> Self {
         Self::IndexNotFound { name: name.into() }
     }
-    pub fn is_update_error(&self) -> bool {
-        matches!(self, Self::UpdateError { .. })
-    }
     pub fn update_error(msg: impl Into<String>) -> Self {
         Self::UpdateError(msg.into())
+    }
+
+    pub fn is_transaction_canceled(&self) -> bool {
+        matches!(self, Self::TransactionCanceled { .. })
+    }
+    pub fn transaction_canceled(reasons: Vec<TransactionCancelReason>) -> Self {
+        Self::TransactionCanceled { reasons }
+    }
+    pub fn cancellation_reasons(&self) -> Option<&[TransactionCancelReason]> {
+        match self {
+            Self::TransactionCanceled { reasons } => Some(reasons),
+            _ => None,
+        }
     }
 }
 
@@ -136,6 +192,16 @@ impl fmt::Display for TableError {
             TableError::UpdateError(msg) => write!(f, "update error: {}", msg),
             TableError::Storage(msg) => write!(f, "storage error: {}", msg),
             TableError::Encoding(msg) => write!(f, "encoding error: {}", msg),
+            TableError::TransactionCanceled { reasons } => {
+                write!(f, "transaction canceled: ")?;
+                for (i, reason) in reasons.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", reason)?;
+                }
+                Ok(())
+            }
         }
     }
 }

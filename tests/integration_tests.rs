@@ -326,6 +326,67 @@ mod update {
     }
 }
 
+mod transactions {
+    use super::*;
+    use nosquealdb::{
+        TransactGetItem, TransactGetRequest, TransactWriteItem, TransactWriteRequest,
+        UpdateExpression, condition::attr,
+    };
+
+    #[test]
+    fn atomic_transfer() {
+        let mut table = TableBuilder::new("account", KeySchema::simple("id", KeyType::S)).build();
+        let items = vec![
+            TransactWriteItem::put(Item::new().with_s("id", "a").with_n("balance", 100)),
+            TransactWriteItem::put(Item::new().with_s("id", "b").with_n("balance", 200)),
+        ];
+        let result = table.transact_write(items);
+        assert!(result.is_ok());
+
+        // transfer 30 from A to B atomically
+        let result = table.transact_write(
+            TransactWriteRequest::new()
+                .update_with_condition(
+                    PrimaryKey::simple("a"),
+                    UpdateExpression::new().add("balance", -50i32),
+                    attr("balance").ge(50i32),
+                )
+                .update(
+                    PrimaryKey::simple("b"),
+                    UpdateExpression::new().add("balance", 50i32),
+                ),
+        );
+        assert!(result.is_ok());
+
+        let a = table.get_item(&PrimaryKey::simple("a")).unwrap().unwrap();
+        let b = table.get_item(&PrimaryKey::simple("b")).unwrap().unwrap();
+        assert_eq!(a.get("balance"), Some(&AttributeValue::N("50".into())));
+        assert_eq!(b.get("balance"), Some(&AttributeValue::N("250".into())));
+
+        // insufficient funds, should fail
+        let result = table.transact_write(
+            TransactWriteRequest::new()
+                .update_with_condition(
+                    PrimaryKey::simple("a"),
+                    UpdateExpression::new().add("balance", -51i32),
+                    attr("balance").ge(51i32),
+                )
+                .update(
+                    PrimaryKey::simple("b"),
+                    UpdateExpression::new().add("balance", 51i32),
+                ),
+        );
+        assert!(result.is_err());
+        assert!(result.unwrap_err().is_transaction_canceled());
+
+        // balances should remain the same
+        let a = table.get_item(&PrimaryKey::simple("a")).unwrap().unwrap();
+        let b = table.get_item(&PrimaryKey::simple("b")).unwrap().unwrap();
+        assert_eq!(a.get("balance"), Some(&AttributeValue::N("50".into())));
+        assert_eq!(b.get("balance"), Some(&AttributeValue::N("250".into())));
+    }
+}
+
 mod gsi {
     use super::*;
 
