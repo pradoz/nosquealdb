@@ -761,7 +761,10 @@ mod tests {
                 .unwrap();
 
             assert!(result.was_update);
-            assert_eq!(result.attributes.unwrap().get("name"), Some(&AttributeValue::S("Alice".into())));
+            assert_eq!(
+                result.attributes.unwrap().get("name"),
+                Some(&AttributeValue::S("Alice".into()))
+            );
         }
     }
 
@@ -1188,7 +1191,9 @@ mod tests {
             }
 
             // query
-            let result = table.query(QueryRequest::new(KeyCondition::pk("user1"))).unwrap();
+            let result = table
+                .query(QueryRequest::new(KeyCondition::pk("user1")))
+                .unwrap();
             assert_eq!(result.count, 5);
 
             // with filter

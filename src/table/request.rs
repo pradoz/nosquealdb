@@ -268,7 +268,6 @@ impl ScanRequest {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
