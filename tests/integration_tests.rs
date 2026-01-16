@@ -1,6 +1,6 @@
 use nosquealdb::{
-    AttributeValue, GsiBuilder, Item, KeyCondition, KeySchema, KeyType, LsiBuilder, PrimaryKey,
-    QueryOptions, Table, TableBuilder,
+    AttributeValue, DeleteRequest, GsiBuilder, Item, KeyCondition, KeySchema, KeyType, LsiBuilder,
+    PrimaryKey, PutRequest, QueryRequest, Table, TableBuilder, UpdateRequest,
 };
 use std::collections::BTreeMap;
 
@@ -143,7 +143,7 @@ mod query {
 
         // forward with limit
         let result = table
-            .query_with_options(KeyCondition::pk("user1"), QueryOptions::new().with_limit(3))
+            .query(QueryRequest::new(KeyCondition::pk("user1")).limit(3))
             .unwrap();
 
         let found_sks: Vec<&str> = result
@@ -155,9 +155,10 @@ mod query {
 
         // reverse with limit
         let result = table
-            .query_with_options(
-                KeyCondition::pk("user1"),
-                QueryOptions::new().with_limit(3).reverse(),
+            .query(
+                QueryRequest::new(KeyCondition::pk("user1"))
+                    .limit(3)
+                    .reverse(),
             )
             .unwrap();
 
@@ -188,9 +189,9 @@ mod query {
                 .unwrap();
         }
 
-        // forward with limit
+        // forward order
         let result = table
-            .query_with_options(KeyCondition::pk("user1"), QueryOptions::new())
+            .query(QueryRequest::new(KeyCondition::pk("user1")))
             .unwrap();
 
         let found: Vec<i32> = result
@@ -291,22 +292,26 @@ mod update {
         let key = PrimaryKey::simple("doc1");
 
         // update with correct version, should succeed
-        let result = table.update_item_with_condition(
-            &key,
-            update_expr()
-                .set("content", "dolor something")
-                .set("version", 2i32),
-            attr("version").eq(1i32),
+        let result = table.update(
+            UpdateRequest::new(
+                key.clone(),
+                UpdateExpression::new()
+                    .set("content", "dolor something")
+                    .set("version", 2i32),
+            )
+            .condition(attr("version").eq(1i32)),
         );
         assert!(result.is_ok());
 
         // update with stale version, should fail
-        let result = table.update_item_with_condition(
-            &key,
-            update_expr()
-                .set("content", "stale text")
-                .set("version", 2i32),
-            attr("version").eq(1i32),
+        let result = table.update(
+            UpdateRequest::new(
+                key.clone(),
+                UpdateExpression::new()
+                    .set("content", "stale text")
+                    .set("version", 2i32),
+            )
+            .condition(attr("version").eq(1i32)),
         );
         assert!(result.is_err());
         assert!(result.unwrap_err().is_condition_failed());
@@ -436,17 +441,17 @@ mod gsi {
             .build();
 
         table
-            .put_item(
+            .put(PutRequest::new(
                 Item::new()
                     .with_s("pk", "user1")
                     .with_s("sk", "order1")
                     .with_s("date", "2026-01-08"),
-            )
+            ))
             .unwrap();
         assert_eq!(table.gsi("by-date").unwrap().len(), 1);
 
         table
-            .delete_item(&PrimaryKey::composite("user1", "order1"))
+            .delete(DeleteRequest::new(PrimaryKey::composite("user1", "order1")))
             .unwrap();
         assert_eq!(table.gsi("by-date").unwrap().len(), 0);
     }
@@ -537,20 +542,26 @@ mod conditional_write {
         .build();
 
         table
-            .put_item_if_not_exists(
+            .put(
+                PutRequest::new(
+                    Item::new()
+                        .with_s("pk", "user1")
+                        .with_s("sk", "order1")
+                        .with_s("status", "active"),
+                )
+                .if_not_exists(),
+            )
+            .unwrap();
+
+        // already exists, should fail
+        let result = table.put(
+            PutRequest::new(
                 Item::new()
                     .with_s("pk", "user1")
                     .with_s("sk", "order1")
                     .with_s("status", "active"),
             )
-            .unwrap();
-
-        // already exists, should fail
-        let result = table.put_item_if_not_exists(
-            Item::new()
-                .with_s("pk", "user1")
-                .with_s("sk", "order1")
-                .with_s("status", "active"),
+            .if_not_exists(),
         );
         assert!(result.is_err());
         assert!(result.unwrap_err().item_already_exists());

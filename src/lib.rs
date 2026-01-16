@@ -12,7 +12,10 @@ pub use error::{StorageError, StorageResult, TableError, TableResult};
 pub use index::{GlobalSecondaryIndex, GsiBuilder, LocalSecondaryIndex, LsiBuilder, Projection};
 pub use query::{KeyCondition, QueryOptions, QueryResult, SortKeyOp};
 pub use storage::{MemoryStorage, Storage, StorageExt};
-pub use table::{Table, TableBuilder};
+pub use table::{
+    DeleteRequest, GetRequest, PutRequest, QueryRequest, ScanRequest, Table, TableBuilder,
+    UpdateRequest,
+};
 pub use types::{
     AttributeValue, DecodeError, Item, KeyAttribute, KeySchema, KeyType, KeyValidationError,
     KeyValue, PrimaryKey, ReturnValue, WriteResult,

@@ -1,5 +1,8 @@
 use std::collections::BTreeMap;
 
+use super::request::{
+    DeleteRequest, GetRequest, PutRequest, QueryRequest, ScanRequest, UpdateRequest,
+};
 use crate::condition::{Condition, evaluate};
 use crate::error::{TableError, TableResult};
 use crate::index::{GlobalSecondaryIndex, GsiBuilder, LocalSecondaryIndex, LsiBuilder};
@@ -69,7 +72,7 @@ impl Table {
         let name = gsi.name().to_string();
 
         let mut gsi = gsi;
-        for item in self.scan().unwrap_or_default() {
+        for item in self.scan_all().unwrap_or_default() {
             if let Some(pk) = item.extract_key(&self.schema) {
                 gsi.put(pk, &item);
             }
@@ -91,7 +94,7 @@ impl Table {
         let name = lsi.name().to_string();
 
         let mut lsi = lsi;
-        for item in self.scan().unwrap_or_default() {
+        for item in self.scan_all().unwrap_or_default() {
             if let Some(pk) = item.extract_key(&self.schema) {
                 lsi.put(&pk, &item);
             }
@@ -108,40 +111,151 @@ impl Table {
         self.lsis.keys().map(|s| s.as_str())
     }
 
-    // operations
-    pub fn put_item(&mut self, item: Item) -> TableResult<Option<Item>> {
-        let result = self.put_item_with_return(item, ReturnValue::AllOld)?;
+    // public API operations
+    pub fn put(&mut self, request: impl Into<PutRequest>) -> TableResult<WriteResult> {
+        let request = request.into();
+
+        if request.if_not_exists {
+            return self.put_if_not_exists_internal(request.item, request.return_value);
+        }
+
+        self.put_internal(request.item, request.condition, request.return_value)
+    }
+
+    pub fn get(&self, request: impl Into<GetRequest>) -> TableResult<Option<Item>> {
+        let request = request.into();
+        let storage_key = request.key.to_storage_key();
+        let item = self.get_item_by_storage_key(&storage_key)?;
+
+        // TODO: apply projection if it exists
+        // if let (Some(item), Some(projection)) = (&item, &request.projection) {
+        //     return Ok(Some(project_item(item, projection)));
+        // }
+
+        Ok(item)
+    }
+
+    pub fn update(&mut self, request: UpdateRequest) -> TableResult<WriteResult> {
+        self.update_internal(
+            &request.key,
+            request.expression,
+            request.condition,
+            request.return_value,
+        )
+    }
+
+    pub fn delete(&mut self, request: impl Into<DeleteRequest>) -> TableResult<WriteResult> {
+        let request = request.into();
+        self.delete_internal(&request.key, request.condition, request.return_value)
+    }
+
+    pub fn query(&mut self, request: impl Into<QueryRequest>) -> TableResult<QueryResult> {
+        let request = request.into();
+        self.query_internal(request.key_condition, request.filter, request.options)
+    }
+
+    pub fn query_gsi(
+        &self,
+        index_name: &str,
+        request: impl Into<QueryRequest>,
+    ) -> TableResult<QueryResult> {
+        let request = request.into();
+        let gsi = self
+            .gsis
+            .get(index_name)
+            .ok_or_else(|| TableError::index_not_found(index_name))?;
+
+        let mut result = gsi.query_with_options(request.key_condition, request.options)?;
+
+        if let Some(filter) = request.filter {
+            let filtered: Vec<Item> = result
+                .items
+                .into_iter()
+                .filter(|item| evaluate(&filter, item).unwrap_or(false))
+                .collect();
+            result.count = filtered.len();
+            result.items = filtered;
+        }
+        Ok(result)
+    }
+
+    pub fn query_lsi(
+        &self,
+        index_name: &str,
+        request: impl Into<QueryRequest>,
+    ) -> TableResult<QueryResult> {
+        let request = request.into();
+        let lsi = self
+            .lsis
+            .get(index_name)
+            .ok_or_else(|| TableError::index_not_found(index_name))?;
+
+        let mut result = lsi.query_with_options(request.key_condition, request.options)?;
+
+        if let Some(filter) = request.filter {
+            let filtered: Vec<Item> = result
+                .items
+                .into_iter()
+                .filter(|item| evaluate(&filter, item).unwrap_or(false))
+                .collect();
+            result.count = filtered.len();
+            result.items = filtered;
+        }
+        Ok(result)
+    }
+
+    pub fn scan(&self, request: ScanRequest) -> TableResult<Vec<Item>> {
+        let mut items = Vec::new();
+        let limit = request.limit.unwrap_or(usize::MAX);
+
+        for (_, value) in self.storage.iter() {
+            if items.len() >= limit {
+                break;
+            }
+
+            let item = self.decode_item(value)?;
+            if let Some(ref filter) = request.filter {
+                if !evaluate(filter, &item).unwrap_or(false) {
+                    continue;
+                }
+            }
+
+            items.push(item);
+        }
+
+        Ok(items)
+    }
+
+    // convenience methods
+    pub fn put_item(&mut self, item: Item) -> TableResult<()> {
+        self.put(PutRequest::new(item))?;
+        Ok(())
+    }
+
+    pub fn get_item(&self, key: &PrimaryKey) -> TableResult<Option<Item>> {
+        self.get(GetRequest::new(key.clone()))
+    }
+
+    pub fn delete_item(&mut self, key: &PrimaryKey) -> TableResult<Option<Item>> {
+        let result = self.delete(DeleteRequest::new(key.clone()).return_old())?;
         Ok(result.attributes)
     }
 
-    pub fn put_item_with_return(
+    pub fn update_item(
         &mut self,
-        item: Item,
-        return_value: ReturnValue,
-    ) -> TableResult<WriteResult> {
-        self.put_item_internal(item, None, return_value)
-    }
-
-    pub fn put_item_with_condition(
-        &mut self,
-        item: Item,
-        condition: Condition,
+        key: &PrimaryKey,
+        expression: UpdateExpression,
     ) -> TableResult<Option<Item>> {
-        let result =
-            self.put_item_with_condition_and_return(item, condition, ReturnValue::AllOld)?;
+        let result = self.update(UpdateRequest::new(key.clone(), expression))?;
         Ok(result.attributes)
     }
 
-    pub fn put_item_with_condition_and_return(
-        &mut self,
-        item: Item,
-        condition: Condition,
-        return_value: ReturnValue,
-    ) -> TableResult<WriteResult> {
-        self.put_item_internal(item, Some(condition), return_value)
+    pub fn scan_all(&self) -> TableResult<Vec<Item>> {
+        self.scan(ScanRequest::new())
     }
 
-    fn put_item_internal(
+    // internal operations
+    fn put_internal(
         &mut self,
         item: Item,
         condition: Option<Condition>,
@@ -182,7 +296,11 @@ impl Table {
         })
     }
 
-    pub fn put_item_if_not_exists(&mut self, item: Item) -> TableResult<()> {
+    fn put_if_not_exists_internal(
+        &mut self,
+        item: Item,
+        return_value: ReturnValue,
+    ) -> TableResult<WriteResult> {
         let _ = item.validate_key(&self.schema())?;
 
         let pk = item.extract_key(&self.schema).ok_or_else(|| {
@@ -201,47 +319,19 @@ impl Table {
         self.storage.put(&storage_key, encoded)?;
         self.update_indexes_on_put(&pk, &item);
 
-        Ok(())
+        let attributes = match return_value {
+            ReturnValue::None => None,
+            ReturnValue::AllOld => None,
+            ReturnValue::AllNew => Some(item),
+        };
+
+        Ok(WriteResult {
+            attributes,
+            was_update: false,
+        })
     }
 
-    pub fn get_item(&self, key: &PrimaryKey) -> TableResult<Option<Item>> {
-        let storage_key = key.to_storage_key();
-        self.get_item_by_storage_key(&storage_key)
-    }
-
-    pub fn delete_item(&mut self, key: &PrimaryKey) -> TableResult<Option<Item>> {
-        let result = self.delete_item_with_return(key, ReturnValue::AllOld)?;
-        Ok(result.attributes)
-    }
-
-    pub fn delete_item_with_return(
-        &mut self,
-        key: &PrimaryKey,
-        return_value: ReturnValue,
-    ) -> TableResult<WriteResult> {
-        self.delete_item_internal(key, None, return_value)
-    }
-
-    pub fn delete_item_with_condition(
-        &mut self,
-        key: &PrimaryKey,
-        condition: Condition,
-    ) -> TableResult<Option<Item>> {
-        let result =
-            self.delete_item_with_condition_and_return(key, condition, ReturnValue::AllOld)?;
-        Ok(result.attributes)
-    }
-
-    pub fn delete_item_with_condition_and_return(
-        &mut self,
-        key: &PrimaryKey,
-        condition: Condition,
-        return_value: ReturnValue,
-    ) -> TableResult<WriteResult> {
-        self.delete_item_internal(key, Some(condition), return_value)
-    }
-
-    fn delete_item_internal(
+    fn delete_internal(
         &mut self,
         key: &PrimaryKey,
         condition: Option<Condition>,
@@ -268,7 +358,7 @@ impl Table {
         let attributes = match return_value {
             ReturnValue::None => None,
             ReturnValue::AllOld => old_item,
-            ReturnValue::AllNew => None, // Delete has no "new" item
+            ReturnValue::AllNew => None, // delete has no "new" item
         };
 
         Ok(WriteResult {
@@ -277,150 +367,7 @@ impl Table {
         })
     }
 
-    pub fn query(&self, condition: KeyCondition) -> TableResult<QueryResult> {
-        self.query_with_options(condition, QueryOptions::new())
-    }
-
-    pub fn query_with_options(
-        &self,
-        condition: KeyCondition,
-        options: QueryOptions,
-    ) -> TableResult<QueryResult> {
-        let executor = QueryExecutor::new(&self.schema);
-        executor.validate_condition(&condition)?;
-
-        let items = self.iter_with_keys()?;
-        executor.execute(items.into_iter(), &condition, &options)
-    }
-
-    pub fn query_with_filter(
-        &self,
-        key_condition: KeyCondition,
-        filter: Condition,
-    ) -> TableResult<QueryResult> {
-        self.query_with_filter_and_options(key_condition, filter, QueryOptions::new())
-    }
-
-    pub fn query_with_filter_and_options(
-        &self,
-        key_condition: KeyCondition,
-        filter: Condition,
-        options: QueryOptions,
-    ) -> TableResult<QueryResult> {
-        let mut result = self.query_with_options(key_condition, options)?;
-        let filtered: Vec<Item> = result
-            .items
-            .into_iter()
-            .filter(|item| evaluate(&filter, item).unwrap_or(false))
-            .collect();
-        let count = filtered.len();
-        result.items = filtered;
-        result.count = count;
-
-        Ok(result)
-    }
-
-    pub fn query_gsi(&self, index_name: &str, condition: KeyCondition) -> TableResult<QueryResult> {
-        self.query_gsi_with_options(index_name, condition, QueryOptions::new())
-    }
-
-    pub fn query_gsi_with_options(
-        &self,
-        index_name: &str,
-        condition: KeyCondition,
-        options: QueryOptions,
-    ) -> TableResult<QueryResult> {
-        let gsi = self
-            .gsis
-            .get(index_name)
-            .ok_or_else(|| TableError::index_not_found(index_name))?;
-
-        gsi.query_with_options(condition, options)
-    }
-
-    pub fn query_gsi_with_filter(
-        &self,
-        index_name: &str,
-        key_condition: KeyCondition,
-        filter: Condition,
-    ) -> TableResult<QueryResult> {
-        let mut result = self.query_gsi(index_name, key_condition)?;
-
-        let filtered: Vec<Item> = result
-            .items
-            .into_iter()
-            .filter(|item| evaluate(&filter, item).unwrap_or(false))
-            .collect();
-
-        let count = filtered.len();
-        result.items = filtered;
-        result.count = count;
-
-        Ok(result)
-    }
-
-    pub fn query_lsi(&self, index_name: &str, condition: KeyCondition) -> TableResult<QueryResult> {
-        self.query_lsi_with_options(index_name, condition, QueryOptions::new())
-    }
-
-    pub fn query_lsi_with_options(
-        &self,
-        index_name: &str,
-        condition: KeyCondition,
-        options: QueryOptions,
-    ) -> TableResult<QueryResult> {
-        let lsi = self
-            .lsis
-            .get(index_name)
-            .ok_or_else(|| TableError::index_not_found(index_name))?;
-
-        lsi.query_with_options(condition, options)
-    }
-
-    pub fn update_item(
-        &mut self,
-        key: &PrimaryKey,
-        expression: UpdateExpression,
-    ) -> TableResult<Option<Item>> {
-        let result = self.update_item_with_return(key, expression, ReturnValue::AllNew)?;
-        Ok(result.attributes)
-    }
-
-    pub fn update_item_with_return(
-        &mut self,
-        key: &PrimaryKey,
-        expression: UpdateExpression,
-        return_value: ReturnValue,
-    ) -> TableResult<WriteResult> {
-        self.update_item_internal(key, expression, None, return_value)
-    }
-
-    pub fn update_item_with_condition(
-        &mut self,
-        key: &PrimaryKey,
-        expression: UpdateExpression,
-        condition: Condition,
-    ) -> TableResult<Option<Item>> {
-        let result = self.update_item_with_condition_and_return(
-            key,
-            expression,
-            condition,
-            ReturnValue::AllNew,
-        )?;
-        Ok(result.attributes)
-    }
-
-    pub fn update_item_with_condition_and_return(
-        &mut self,
-        key: &PrimaryKey,
-        expression: UpdateExpression,
-        condition: Condition,
-        return_value: ReturnValue,
-    ) -> TableResult<WriteResult> {
-        self.update_item_internal(key, expression, Some(condition), return_value)
-    }
-
-    fn update_item_internal(
+    fn update_internal(
         &mut self,
         key: &PrimaryKey,
         expression: UpdateExpression,
@@ -469,38 +416,31 @@ impl Table {
         })
     }
 
-    pub fn scan(&self) -> TableResult<Vec<Item>> {
-        let mut items = Vec::new();
+    pub fn query_internal(
+        &self,
+        key_condition: KeyCondition,
+        filter: Option<Condition>,
+        options: QueryOptions,
+    ) -> TableResult<QueryResult> {
+        let executor = QueryExecutor::new(&self.schema);
+        executor.validate_condition(&key_condition)?;
 
-        for (_, value) in self.storage.iter() {
-            let item = self.decode_item(value)?;
-            items.push(item);
+        let items = self.iter_with_keys()?;
+        let mut result = executor.execute(items.into_iter(), &key_condition, &options)?;
+
+        if let Some(filter) = filter {
+            let filtered: Vec<Item> = result
+                .items
+                .into_iter()
+                .filter(|item| evaluate(&filter, item).unwrap_or(false))
+                .collect();
+            result.count = filtered.len();
+            result.items = filtered;
         }
 
-        Ok(items)
+        Ok(result)
     }
 
-    pub fn scan_with_filter(&self, filter: Condition) -> TableResult<Vec<Item>> {
-        let items = self.scan()?;
-
-        Ok(items
-            .into_iter()
-            .filter(|item| evaluate(&filter, item).unwrap_or(false))
-            .collect())
-    }
-
-    pub fn scan_limit(&self, limit: usize) -> TableResult<Vec<Item>> {
-        let mut items = Vec::with_capacity(limit.min(self.storage.len()));
-
-        for (_, value) in self.storage.iter().take(limit) {
-            let item = self.decode_item(value)?;
-            items.push(item);
-        }
-
-        Ok(items)
-    }
-
-    // internal helpers
     fn encode_item(&self, item: &Item) -> TableResult<Vec<u8>> {
         let map: BTreeMap<String, AttributeValue> = item
             .iter()
@@ -686,13 +626,15 @@ mod tests {
                 .with_s("user_id", test_key_name)
                 .with_s("name", "Bob");
 
-            let old = table.put_item(item1).unwrap();
-            assert!(old.is_none());
+            let result = table.put(PutRequest::new(item1).return_old()).unwrap();
+            assert!(result.attributes.is_none());
+            assert!(!result.was_update);
 
-            let old = table.put_item(item2).unwrap();
-            assert!(old.is_some());
+            let result = table.put(PutRequest::new(item2).return_old()).unwrap();
+            assert!(result.attributes.is_some());
+            assert!(result.was_update);
             assert_eq!(
-                old.unwrap().get("name"),
+                result.attributes.unwrap().get("name"),
                 Some(&AttributeValue::S("Alice".into()))
             );
 
@@ -762,7 +704,7 @@ mod tests {
                 .with_s("user_id", "user123")
                 .with_s("name", "Alice");
 
-            let result = table.put_item_with_return(item, ReturnValue::None).unwrap();
+            let result = table.put(PutRequest::new(item)).unwrap();
             assert!(result.attributes.is_none());
             assert!(!result.was_update);
         }
@@ -775,9 +717,7 @@ mod tests {
             let item1 = Item::new()
                 .with_s("user_id", "user123")
                 .with_s("name", "Alice");
-            let result = table
-                .put_item_with_return(item1, ReturnValue::AllOld)
-                .unwrap();
+            let result = table.put(PutRequest::new(item1).return_old()).unwrap();
             assert!(result.attributes.is_none());
             assert!(!result.was_update);
 
@@ -785,9 +725,7 @@ mod tests {
             let item2 = Item::new()
                 .with_s("user_id", "user123")
                 .with_s("name", "Bob");
-            let result = table
-                .put_item_with_return(item2, ReturnValue::AllOld)
-                .unwrap();
+            let result = table.put(PutRequest::new(item2).return_old()).unwrap();
             assert!(result.was_update);
             let old = result.attributes.unwrap();
             assert_eq!(old.get("name"), Some(&AttributeValue::S("Alice".into())));
@@ -800,9 +738,7 @@ mod tests {
                 .with_s("user_id", "user123")
                 .with_s("name", "Alice");
 
-            let result = table
-                .put_item_with_return(item.clone(), ReturnValue::AllNew)
-                .unwrap();
+            let result = table.put(PutRequest::new(item).return_new()).unwrap();
             assert!(!result.was_update);
 
             let new = result.attributes.unwrap();
@@ -810,7 +746,7 @@ mod tests {
         }
 
         #[test]
-        fn delete_return_none() {
+        fn delete_return_old() {
             let mut table = simple_table();
             table
                 .put_item(
@@ -821,30 +757,11 @@ mod tests {
                 .unwrap();
 
             let result = table
-                .delete_item_with_return(&PrimaryKey::simple("user123"), ReturnValue::None)
-                .unwrap();
-            assert!(result.attributes.is_none());
-            assert!(result.was_update);
-        }
-
-        #[test]
-        fn delete_return_all_old() {
-            let mut table = simple_table();
-            table
-                .put_item(
-                    Item::new()
-                        .with_s("user_id", "user123")
-                        .with_s("name", "Alice"),
-                )
-                .unwrap();
-
-            let result = table
-                .delete_item_with_return(&PrimaryKey::simple("user123"), ReturnValue::AllOld)
+                .delete(DeleteRequest::new(PrimaryKey::simple("user123")).return_old())
                 .unwrap();
 
             assert!(result.was_update);
-            let old = result.attributes.unwrap();
-            assert_eq!(old.get("name"), Some(&AttributeValue::S("Alice".into())));
+            assert_eq!(result.attributes.unwrap().get("name"), Some(&AttributeValue::S("Alice".into())));
         }
     }
 
@@ -1120,11 +1037,11 @@ mod tests {
                 .with_s("name", "Bob");
 
             // doesn't exist yet, should succeed
-            assert!(table.put_item_if_not_exists(item1).is_ok());
+            assert!(table.put(PutRequest::new(item1).if_not_exists()).is_ok());
             assert_eq!(table.len(), 1);
 
             // alreadys exists, should fail
-            assert!(table.put_item_if_not_exists(item2).is_err());
+            assert!(table.put(PutRequest::new(item2).if_not_exists()).is_err());
             assert_eq!(table.len(), 1);
 
             // initial put is preserved
@@ -1142,12 +1059,14 @@ mod tests {
                 .with_s("name", "Alice");
 
             // doesn't exist yet, should succeed
-            let result = table.put_item_with_condition(item.clone(), attr("user_id").not_exists());
+            let result =
+                table.put(PutRequest::new(item.clone()).condition(attr("user_id").not_exists()));
             assert!(result.is_ok());
             assert_eq!(table.len(), 1);
 
             // alreadys exists, should fail
-            let result = table.put_item_with_condition(item.clone(), attr("user_id").not_exists());
+            let result =
+                table.put(PutRequest::new(item.clone()).condition(attr("user_id").not_exists()));
             assert!(result.is_err());
             assert!(result.unwrap_err().is_condition_failed());
             assert_eq!(table.len(), 1);
@@ -1159,52 +1078,27 @@ mod tests {
         }
 
         #[test]
-        fn put_with_optimistic_locking() {
-            let mut table = simple_table();
-
-            table
-                .put_item(
-                    Item::new()
-                        .with_s("user_id", "user123")
-                        .with_n("version", 1),
-                )
-                .unwrap();
-
-            let item = Item::new()
-                .with_s("user_id", "user123")
-                .with_n("version", 2)
-                .with_s("name", "Alice");
-
-            let result = table.put_item_with_condition(item.clone(), attr("version").eq(1i32));
-            assert!(result.is_ok());
-
-            let key = PrimaryKey::simple("user123");
-            let stored = table.get_item(&key).unwrap().unwrap();
-            assert_eq!(stored.get("version"), Some(&AttributeValue::N("2".into())));
-        }
-
-        #[test]
         fn delete_with_condition() {
             let mut table = simple_table();
 
-            table
-                .put_item(
-                    Item::new()
-                        .with_s("user_id", "user123")
-                        .with_s("status", "inactive"),
-                )
-                .unwrap();
+            let _ = table.put(PutRequest::new(
+                Item::new()
+                    .with_s("user_id", "user123")
+                    .with_s("status", "inactive"),
+            ));
 
             let key = PrimaryKey::simple("user123");
 
             // wrong condition, should fail
-            let result = table.delete_item_with_condition(&key, attr("status").eq("active"));
+            let result = table
+                .delete(DeleteRequest::new(key.clone()).condition(attr("status").eq("active")));
             assert!(result.is_err());
             assert!(result.unwrap_err().is_condition_failed());
             assert_eq!(table.len(), 1);
 
             // item exists, should succeed
-            let result = table.delete_item_with_condition(&key, attr("status").eq("inactive"));
+            let result = table
+                .delete(DeleteRequest::new(key.clone()).condition(attr("status").eq("inactive")));
             assert!(result.is_ok());
             assert!(table.is_empty());
         }
@@ -1273,13 +1167,13 @@ mod tests {
         }
     }
 
-    mod query {
+    mod query_and_scan {
         use super::*;
+        use crate::query::KeyCondition;
 
         #[test]
-        fn with_filter() {
+        fn query_with_request_builder() {
             let mut table = composite_table();
-
             for i in 1..=5 {
                 let status = if i % 2 == 0 { "shipped" } else { "pending" };
                 table
@@ -1293,73 +1187,39 @@ mod tests {
                     .unwrap();
             }
 
+            // query
+            let result = table.query(QueryRequest::new(KeyCondition::pk("user1"))).unwrap();
+            assert_eq!(result.count, 5);
+
+            // with filter
             let result = table
-                .query_with_filter(KeyCondition::pk("user1"), attr("status").eq("pending"))
+                .query(
+                    QueryRequest::new(KeyCondition::pk("user1"))
+                        .filter(attr("status").eq("pending")),
+                )
                 .unwrap();
             assert_eq!(result.count, 3);
 
+            // with limit and reverse
             let result = table
-                .query_with_filter(
-                    KeyCondition::pk("user1"),
-                    attr("status").eq("pending").and(attr("amount").ge(300i32)),
+                .query(
+                    QueryRequest::new(KeyCondition::pk("user1"))
+                        .limit(2)
+                        .reverse(),
                 )
                 .unwrap();
             assert_eq!(result.count, 2);
-        }
-    }
-
-    mod scan {
-        use super::*;
-
-        #[test]
-        fn empty_table() {
-            let table = simple_table();
-            let items = table.scan().unwrap();
-            assert!(items.is_empty());
+            assert_eq!(
+                result.items[0].get("order_id").unwrap().as_s(),
+                Some("order#005")
+            );
         }
 
         #[test]
-        fn returns_all_items() {
+        fn scan_with_request_builder() {
             let mut table = simple_table();
-            let total_items = 10;
 
-            for i in 0..total_items {
-                let item = Item::new()
-                    .with_s("user_id", format!("user{}", i))
-                    .with_n("index", i);
-                table.put_item(item).unwrap();
-            }
-
-            let items = table.scan().unwrap();
-            assert!(!items.is_empty());
-            assert_eq!(items.len(), table.len());
-            assert_eq!(items.len(), total_items);
-        }
-
-        #[test]
-        fn returns_limited_items() {
-            let mut table = simple_table();
-            let total_items = 10;
-            let limit = 5;
-
-            for i in 0..total_items {
-                let item = Item::new()
-                    .with_s("user_id", format!("user{}", i))
-                    .with_n("index", i);
-                table.put_item(item).unwrap();
-            }
-
-            let items = table.scan_limit(limit).unwrap();
-            assert!(!items.is_empty());
-            assert_eq!(items.len(), limit);
-        }
-
-        #[test]
-        fn with_filter() {
-            let mut table = simple_table();
-            let total_items = 10;
-
-            for i in 0..total_items {
+            for i in 0..10 {
                 let status = if i % 2 == 0 { "active" } else { "inactive" };
                 table
                     .put_item(
@@ -1370,8 +1230,19 @@ mod tests {
                     .unwrap();
             }
 
-            let items = table.scan_with_filter(attr("status").eq("active")).unwrap();
+            // scan all
+            let items = table.scan(ScanRequest::new()).unwrap();
+            assert_eq!(items.len(), 10);
+
+            // with filter
+            let items = table
+                .scan(ScanRequest::new().filter(attr("status").eq("active")))
+                .unwrap();
             assert_eq!(items.len(), 5);
+
+            // with limit
+            let items = table.scan(ScanRequest::new().limit(3)).unwrap();
+            assert_eq!(items.len(), 3);
         }
     }
 }
