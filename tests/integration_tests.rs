@@ -1,6 +1,7 @@
 use nosquealdb::{
     AttributeValue, DeleteRequest, GsiBuilder, Item, KeyCondition, KeySchema, KeyType, LsiBuilder,
-    PrimaryKey, PutRequest, QueryRequest, Table, TableBuilder, UpdateRequest,
+    PrimaryKey, PutRequest, QueryRequest, Table, TableBuilder, TransactWriteItem,
+    TransactWriteRequest, UpdateExpression, UpdateRequest, condition::attr,
 };
 use std::collections::BTreeMap;
 
@@ -328,10 +329,6 @@ mod update {
 
 mod transactions {
     use super::*;
-    use nosquealdb::{
-        TransactGetItem, TransactGetRequest, TransactWriteItem, TransactWriteRequest,
-        UpdateExpression, condition::attr,
-    };
 
     #[test]
     fn atomic_transfer() {

@@ -3,6 +3,10 @@ use std::collections::BTreeMap;
 use super::request::{
     DeleteRequest, GetRequest, PutRequest, QueryRequest, ScanRequest, UpdateRequest,
 };
+use crate::batch::{
+    BatchExecutor, BatchGetRequest, BatchGetResult, BatchWriteItem, BatchWriteRequest,
+    BatchWriteResult,
+};
 use crate::condition::{Condition, evaluate};
 use crate::error::{TableError, TableResult, TransactionCancelReason};
 use crate::index::{GlobalSecondaryIndex, GsiBuilder, LocalSecondaryIndex, LsiBuilder};
@@ -288,6 +292,63 @@ impl Table {
         let request = request.into();
         let executor = TransactionExecutor::new();
         executor.execute_get(&request.items, |key| self.get_item(key))
+    }
+
+    pub fn batch_write(
+        &mut self,
+        request: impl Into<BatchWriteRequest>,
+    ) -> TableResult<BatchWriteResult> {
+        let request: BatchWriteRequest = request.into();
+
+        if request.is_empty() {
+            return Ok(BatchWriteResult::new());
+        }
+
+        let mut puts = Vec::new();
+        let mut deletes = Vec::new();
+        for item in request.items {
+            match item {
+                BatchWriteItem::Put { item } => puts.push(item),
+                BatchWriteItem::Delete { key } => deletes.push(key),
+            }
+        }
+
+        let schema = self.schema.clone();
+        let executor = BatchExecutor::new();
+        let mut write_result = executor.execute_put(puts, &schema, |item| self.put_item(item))?;
+        let delete_result =
+            executor.execute_delete(deletes, |key| self.delete_item(key).map(|_| ()))?;
+
+        // merge results
+        write_result.processed_count += delete_result.processed_count;
+        write_result
+            .unprocessed_items
+            .extend(delete_result.unprocessed_items);
+
+        Ok(write_result)
+    }
+
+    pub fn batch_get(&self, request: impl Into<BatchGetRequest>) -> TableResult<BatchGetResult> {
+        let request: BatchGetRequest = request.into();
+
+        if request.is_empty() {
+            return Ok(BatchGetResult::new());
+        }
+
+        let executor = BatchExecutor::new();
+        executor.execute_get(request.keys, |key| self.get_item(key))
+    }
+
+    // batch convenience methods
+    pub fn put_items(&mut self, items: Vec<Item>) -> TableResult<BatchWriteResult> {
+        self.batch_write(items)
+    }
+    pub fn delete_items(&mut self, keys: Vec<PrimaryKey>) -> TableResult<BatchWriteResult> {
+        let request = BatchWriteRequest::new().delete_many(keys);
+        self.batch_write(request)
+    }
+    pub fn get_items(&mut self, keys: Vec<PrimaryKey>) -> TableResult<BatchGetResult> {
+        self.batch_get(keys)
     }
 
     // internal operations
@@ -1506,6 +1567,106 @@ mod tests {
             ];
             let result = table.transact_get(items).unwrap();
             assert_eq!(result.found_count(), 2);
+        }
+    }
+
+    mod batch {
+        use super::*;
+
+        #[test]
+        fn empty_batch() {
+            let mut table = simple_table();
+
+            // write
+            let result = table.batch_write(BatchWriteRequest::new()).unwrap();
+            assert!(result.is_complete());
+            assert_eq!(result.processed_count, 0);
+
+            // read
+            let result = table.batch_get(BatchGetRequest::new()).unwrap();
+            assert!(result.is_complete());
+            assert_eq!(result.found_count(), 0);
+        }
+
+        #[test]
+        fn multiple_writes() {
+            let mut table = simple_table();
+
+            let result = table
+                .batch_write(
+                    BatchWriteRequest::new()
+                        .put(Item::new().with_s("user_id", "user0"))
+                        .put(Item::new().with_s("user_id", "user1"))
+                        .put(Item::new().with_s("user_id", "user2"))
+                        .delete(PrimaryKey::simple("user2")),
+                )
+                .unwrap();
+            assert!(result.is_complete());
+            assert_eq!(result.processed_count, 4);
+            assert_eq!(table.len(), 2);
+        }
+
+        #[test]
+        fn from_vec_items() {
+            let mut table = simple_table();
+
+            // put
+            let items = vec![
+                Item::new().with_s("user_id", "user0"),
+                Item::new().with_s("user_id", "user1"),
+            ];
+            let result = table.put_items(items).unwrap();
+            assert!(result.is_complete());
+            assert_eq!(result.processed_count, 2);
+            assert_eq!(table.len(), 2);
+
+            // get
+            let keys = vec![PrimaryKey::simple("user0"), PrimaryKey::simple("user1")];
+            let result = table.get_items(keys.clone()).unwrap();
+            assert!(result.is_complete());
+            assert_eq!(result.found_count(), 2);
+
+            // delete
+            let result = table.delete_items(keys.clone()).unwrap();
+            assert!(result.is_complete());
+            assert!(table.is_empty());
+            assert_eq!(result.processed_count, 2);
+        }
+
+        #[test]
+        fn updates_indexes() {
+            let mut table = TableBuilder::new(
+                "test",
+                KeySchema::composite("pk", KeyType::S, "sk", KeyType::S),
+            )
+            .with_gsi(GsiBuilder::new(
+                "by-status",
+                KeySchema::simple("status", KeyType::S),
+            ))
+            .build();
+
+            table
+                .batch_write(
+                    BatchWriteRequest::new()
+                        .put(
+                            Item::new()
+                                .with_s("pk", "user1")
+                                .with_s("sk", "order1")
+                                .with_s("status", "pending"),
+                        )
+                        .put(
+                            Item::new()
+                                .with_s("pk", "user1")
+                                .with_s("sk", "order2")
+                                .with_s("status", "pending"),
+                        ),
+                )
+                .unwrap();
+
+            let result = table
+                .query_gsi("by-status", KeyCondition::pk("pending"))
+                .unwrap();
+            assert_eq!(result.count, 2);
         }
     }
 }

@@ -1,3 +1,4 @@
+pub mod batch;
 pub mod condition;
 pub mod error;
 pub mod index;
@@ -9,7 +10,11 @@ pub mod types;
 pub mod update;
 pub mod utils;
 
-pub use error::{StorageError, StorageResult, TableError, TableResult};
+pub use batch::{
+    BatchExecutor, BatchGetRequest, BatchGetResult, BatchWriteItem, BatchWriteRequest,
+    BatchWriteResult,
+};
+pub use error::{StorageError, StorageResult, TableError, TableResult, TransactionCancelReason};
 pub use index::{GlobalSecondaryIndex, GsiBuilder, LocalSecondaryIndex, LsiBuilder, Projection};
 pub use query::{KeyCondition, QueryOptions, QueryResult, SortKeyOp};
 pub use storage::{MemoryStorage, Storage, StorageExt};

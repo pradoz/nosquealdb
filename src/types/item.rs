@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use super::{AttributeValue, KeySchema, KeyType, KeyValue, PrimaryKey};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Item {
     attributes: BTreeMap<String, AttributeValue>,
 }
