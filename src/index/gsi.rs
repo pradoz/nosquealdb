@@ -12,9 +12,8 @@ pub struct GlobalSecondaryIndex {
     schema: KeySchema,
     projection: Projection,
     table_schema: KeySchema,
-    /// TODO: performance: O(n) scan in remove_by_table_key to find item by table key
-    /// consider maintaining a reverse index (table_key -> storage_key) for O(1) deletion.
-    data: HashMap<String, (PrimaryKey, Item)>,
+    data: HashMap<String, (PrimaryKey, Item)>, // primary data store
+    table_key_index: HashMap<String, String>,  // reverse index for O(1) deletion
 }
 
 impl GlobalSecondaryIndex {
@@ -30,6 +29,7 @@ impl GlobalSecondaryIndex {
             projection,
             table_schema,
             data: HashMap::new(),
+            table_key_index: HashMap::new(),
         }
     }
 
@@ -59,9 +59,15 @@ impl GlobalSecondaryIndex {
         // if an item doesn't have index keys, it's a sparse index - item just isn't indexed
         if let Some(index_key) = self.extract_index_key(item) {
             let storage_key = self.make_storage_key(&index_key, &table_key);
+            let table_storage_key = table_key.to_storage_key();
             let projected = self
                 .projection
                 .project_item(item, &self.table_schema, &self.schema);
+
+            // update reverse index
+            self.table_key_index
+                .insert(table_storage_key, storage_key.clone());
+            // update primary
             self.data.insert(storage_key, (table_key, projected));
         }
 
@@ -122,12 +128,17 @@ impl GlobalSecondaryIndex {
     }
 
     fn remove_by_table_key(&mut self, table_key: &PrimaryKey) -> Option<Item> {
-        let key_to_remove = self
-            .data
-            .iter()
-            .find(|(_, (tk, _))| tk == table_key)
-            .map(|(k, _)| k.clone());
-        key_to_remove.and_then(|k| self.data.remove(&k).map(|(_, item)| item))
+        let to_remove = table_key.to_storage_key();
+        if let Some(gsi_key) = self.table_key_index.remove(&to_remove) {
+            self.data.remove(&gsi_key).map(|(_, item)| item)
+        } else {
+            None
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.data.clear();
+        self.table_key_index.clear();
     }
 }
 
@@ -203,6 +214,7 @@ mod tests {
         gsi.put(table_key, &item);
 
         assert_eq!(gsi.len(), 1);
+        assert_eq!(gsi.table_key_index.len(), 1);
     }
 
     #[test]
@@ -219,6 +231,7 @@ mod tests {
         gsi.put(table_key, &item);
 
         assert!(gsi.is_empty());
+        assert!(gsi.table_key_index.is_empty());
     }
 
     #[test]
@@ -288,8 +301,12 @@ mod tests {
         );
 
         assert_eq!(gsi.len(), 1);
+        assert_eq!(gsi.table_key_index.len(), 1);
+
         gsi.delete(&table_key);
+
         assert!(gsi.is_empty());
+        assert!(gsi.table_key_index.is_empty());
     }
 
     #[test]
@@ -310,6 +327,7 @@ mod tests {
         );
 
         assert_eq!(gsi.len(), 1);
+        assert_eq!(gsi.table_key_index.len(), 1);
 
         // should find under new date
         let result = gsi.query(KeyCondition::pk("2026-01-31")).unwrap();
@@ -347,5 +365,49 @@ mod tests {
 
         // should not have non-key attributes
         assert!(!item.contains("amount"));
+    }
+
+    #[test]
+    fn clear() {
+        let mut gsi = create_gsi();
+
+        for i in 0..10 {
+            let table_key = PrimaryKey::composite("user1", format!("order{:03}", i));
+            gsi.put(
+                table_key,
+                &sample_order("user1", &format!("order{:03}", i), "2026-01-22", i * 100),
+            );
+        }
+        assert_eq!(gsi.len(), 10);
+        assert_eq!(gsi.table_key_index.len(), 10);
+
+        gsi.clear();
+        assert_eq!(gsi.len(), 0);
+        assert_eq!(gsi.table_key_index.len(), 0);
+    }
+
+    #[test]
+    fn reverse_index_consistency() {
+        let mut gsi = create_gsi();
+
+        for i in 0..10 {
+            let table_key = PrimaryKey::composite("user1", format!("order{:03}", i));
+            gsi.put(
+                table_key,
+                &sample_order("user1", &format!("order{:03}", i), "2026-01-22", i * 100),
+            );
+        }
+        assert_eq!(gsi.len(), 10);
+        assert_eq!(gsi.table_key_index.len(), 10);
+
+        for i in 0..5 {
+            let table_key = PrimaryKey::composite("user1", format!("order{:03}", i));
+            gsi.delete(&table_key);
+        }
+        assert_eq!(gsi.len(), 5);
+        assert_eq!(gsi.table_key_index.len(), 5);
+
+        let result = gsi.query(KeyCondition::pk("2026-01-22")).unwrap();
+        assert_eq!(result.count, 5);
     }
 }

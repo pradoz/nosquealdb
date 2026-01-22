@@ -17,8 +17,8 @@ use crate::transaction::{
     TransactionExecutor, TransactionFailureReason,
 };
 use crate::types::{
-    AttributeValue, Item, KeyAttribute, KeySchema, KeyValidationError, PrimaryKey, ReturnValue,
-    WriteResult, decode, encode,
+    AttributeValue, Item, KeySchema, KeyValidationError, PrimaryKey, ReturnValue, WriteResult,
+    decode, encode,
 };
 use crate::update::{UpdateExecutor, UpdateExpression};
 
@@ -57,20 +57,10 @@ impl Table {
     pub fn clear(&mut self) {
         self.storage.clear();
         for gsi in self.gsis.values_mut() {
-            *gsi = GlobalSecondaryIndex::new(
-                gsi.name(),
-                gsi.schema().clone(),
-                gsi.projection().clone(),
-                self.schema.clone(),
-            );
+            gsi.clear();
         }
         for lsi in self.lsis.values_mut() {
-            *lsi = LocalSecondaryIndex::new(
-                lsi.name(),
-                KeyAttribute::new(lsi.sort_key_name(), lsi.sort_key_type()),
-                lsi.projection().clone(),
-                self.schema.clone(),
-            );
+            lsi.clear();
         }
     }
 

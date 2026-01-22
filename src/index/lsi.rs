@@ -14,7 +14,8 @@ pub struct LocalSecondaryIndex {
     sort_key: KeyAttribute,
     projection: Projection,
     table_schema: KeySchema,
-    data: HashMap<String, Item>,
+    data: HashMap<String, Item>,              // primary data store
+    table_key_index: HashMap<String, String>, // reverse index for O(1) deletion
 }
 
 impl LocalSecondaryIndex {
@@ -30,6 +31,7 @@ impl LocalSecondaryIndex {
             projection,
             table_schema,
             data: HashMap::new(),
+            table_key_index: HashMap::new(),
         }
     }
 
@@ -63,9 +65,15 @@ impl LocalSecondaryIndex {
 
         if let Some(lsi_sk) = self.extract_lsi_sort_key(item) {
             let storage_key = self.make_storage_key(&table_key.pk, &lsi_sk, table_key);
+            let table_storage_key = table_key.to_storage_key();
             let projected = self
                 .projection
                 .project_item(item, &self.table_schema, &self.schema());
+
+            // update reverse index
+            self.table_key_index
+                .insert(table_storage_key, storage_key.clone());
+            // update primary
             self.data.insert(storage_key, projected);
         }
 
@@ -118,9 +126,18 @@ impl LocalSecondaryIndex {
     }
 
     fn remove_by_table_key(&mut self, table_key: &PrimaryKey) -> Option<Item> {
-        let suffix = table_key.to_storage_key();
-        let to_remove = self.data.keys().find(|k| k.ends_with(&suffix)).cloned();
-        to_remove.and_then(|k| self.data.remove(&k))
+        let to_remove = table_key.to_storage_key();
+
+        if let Some(lsi_key) = self.table_key_index.remove(&to_remove) {
+            self.data.remove(&lsi_key)
+        } else {
+            None
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.data.clear();
+        self.table_key_index.clear();
     }
 }
 
@@ -207,6 +224,7 @@ mod tests {
 
         lsi.put(&table_key, &item);
         assert_eq!(lsi.len(), 1);
+        assert_eq!(lsi.table_key_index.len(), 1);
     }
 
     #[test]
@@ -223,6 +241,7 @@ mod tests {
         lsi.put(&table_key, &item);
 
         assert!(lsi.is_empty());
+        assert!(lsi.table_key_index.is_empty());
     }
 
     #[test]
@@ -293,9 +312,12 @@ mod tests {
             &sample_order("user1", "order001", "2026-01-08", 100),
         );
         assert_eq!(lsi.len(), 1);
+        assert_eq!(lsi.table_key_index.len(), 1);
 
         lsi.delete(&table_key);
+
         assert!(lsi.is_empty());
+        assert!(lsi.table_key_index.is_empty());
     }
 
     #[test]
@@ -315,11 +337,66 @@ mod tests {
             &sample_order("user1", "order001", "2026-01-20", 150),
         );
         assert_eq!(lsi.len(), 1);
+        assert_eq!(lsi.table_key_index.len(), 1);
 
         let result = lsi.query(KeyCondition::pk("user1")).unwrap();
         assert_eq!(
             result.items[0].get("order_date").unwrap().as_s(),
             Some("2026-01-20")
         );
+    }
+
+    #[test]
+    fn clear() {
+        let mut lsi = create_lsi();
+
+        for i in 0..10 {
+            let table_key = PrimaryKey::composite("user1", format!("order{:03}", i));
+            lsi.put(
+                &table_key,
+                &sample_order(
+                    "user1",
+                    &format!("order{:03}", i),
+                    &format!("2026-01-{:02}", i),
+                    i * 100,
+                ),
+            );
+        }
+        assert_eq!(lsi.len(), 10);
+        assert_eq!(lsi.table_key_index.len(), 10);
+
+        lsi.clear();
+        assert_eq!(lsi.len(), 0);
+        assert_eq!(lsi.table_key_index.len(), 0);
+    }
+
+    #[test]
+    fn reverse_index_consistency() {
+        let mut lsi = create_lsi();
+
+        for i in 0..10 {
+            let table_key = PrimaryKey::composite("user1", format!("order{:03}", i));
+            lsi.put(
+                &table_key,
+                &sample_order(
+                    "user1",
+                    &format!("order{:03}", i),
+                    &format!("2026-01-{:02}", i),
+                    i * 100,
+                ),
+            );
+        }
+        assert_eq!(lsi.len(), 10);
+        assert_eq!(lsi.table_key_index.len(), 10);
+
+        for i in 0..5 {
+            let table_key = PrimaryKey::composite("user1", format!("order{:03}", i));
+            lsi.delete(&table_key);
+        }
+        assert_eq!(lsi.len(), 5);
+        assert_eq!(lsi.table_key_index.len(), 5);
+
+        let result = lsi.query(KeyCondition::pk("user1")).unwrap();
+        assert_eq!(result.count, 5);
     }
 }
