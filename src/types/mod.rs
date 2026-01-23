@@ -7,5 +7,7 @@ mod returns;
 pub use attributes::AttributeValue;
 pub use encoding::{DecodeError, Decoder, Encoder, decode, encode};
 pub use item::{Item, KeyValidationError};
-pub use key::{KeyAttribute, KeySchema, KeyType, KeyValue, PrimaryKey};
+pub use key::{
+    KeyAttribute, KeySchema, KeyType, KeyValue, PrimaryKey, encode_key_component, escape_key_chars,
+};
 pub use returns::{ReturnValue, WriteResult};

@@ -2,8 +2,7 @@ use std::collections::HashMap;
 
 use crate::error::TableResult;
 use crate::query::{KeyCondition, QueryExecutor, QueryOptions, QueryResult};
-use crate::types::{Item, KeyAttribute, KeySchema, KeyType, KeyValue, PrimaryKey};
-use crate::utils::base64_encode;
+use crate::types::{Item, KeyAttribute, KeySchema, KeyType, KeyValue, PrimaryKey, encode_key_component};
 
 use super::projection::Projection;
 
@@ -118,9 +117,9 @@ impl LocalSecondaryIndex {
 
     fn make_storage_key(&self, pk: &KeyValue, lsi_sk: &KeyValue, table_key: &PrimaryKey) -> String {
         format!(
-            "{}#{}#{}",
-            pk_to_string(pk),
-            pk_to_string(lsi_sk),
+            "{}|{}|{}",
+            encode_key_component(pk),
+            encode_key_component(lsi_sk),
             table_key.to_storage_key()
         )
     }
@@ -138,14 +137,6 @@ impl LocalSecondaryIndex {
     pub fn clear(&mut self) {
         self.data.clear();
         self.table_key_index.clear();
-    }
-}
-
-fn pk_to_string(kv: &KeyValue) -> String {
-    match kv {
-        KeyValue::S(s) => format!("S:{}", s),
-        KeyValue::N(n) => format!("N:{}", n),
-        KeyValue::B(b) => format!("B:{}", base64_encode(b)),
     }
 }
 

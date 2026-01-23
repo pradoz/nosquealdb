@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use super::types::{TransactGetItem, TransactGetResult, TransactWriteItem};
-use crate::condition::evaluate;
+use crate::condition::{evaluate, Condition};
 use crate::error::TableResult;
 use crate::types::{Item, KeySchema, PrimaryKey};
 use crate::update::UpdateExecutor;
@@ -78,6 +78,21 @@ impl TransactionExecutor {
         Ok(())
     }
 
+    fn validate_condition(
+        &self,
+        condition: Option<&Condition>,
+        item: &Option<Item>,
+        index: usize,
+    ) -> Result<(), TransactionFailureReason> {
+        if let Some(cond) = condition {
+            let check_item = item.clone().unwrap_or_default();
+            if !evaluate(cond, &check_item).unwrap_or(false) {
+                return Err(TransactionFailureReason::ConditionCheckFailed { index });
+            }
+        }
+        Ok(())
+    }
+
     fn extract_key(
         &self,
         item: &TransactWriteItem,
@@ -119,12 +134,7 @@ impl TransactionExecutor {
                         message: e.to_string(),
                     })?;
 
-                if let Some(cond) = condition {
-                    let check = current.unwrap_or_default();
-                    if !evaluate(cond, &check).unwrap_or(false) {
-                        return Err(TransactionFailureReason::ConditionCheckFailed { index });
-                    }
-                }
+                self.validate_condition(condition.as_ref(), &current, index)?;
             }
             TransactWriteItem::Update {
                 expression,
@@ -133,11 +143,7 @@ impl TransactionExecutor {
             } => {
                 let existing = current.ok_or(TransactionFailureReason::ItemNotFound { index })?;
 
-                if let Some(cond) = condition {
-                    if !evaluate(cond, &existing).unwrap_or(false) {
-                        return Err(TransactionFailureReason::ConditionCheckFailed { index });
-                    }
-                }
+                self.validate_condition(condition.as_ref(), &Some(existing.clone()), index)?;
 
                 let executor = UpdateExecutor::new();
                 let updated = executor.execute(existing, expression).map_err(|_| {
@@ -155,18 +161,10 @@ impl TransactionExecutor {
                 }
             }
             TransactWriteItem::Delete { condition, .. } => {
-                if let Some(cond) = condition {
-                    let check = current.unwrap_or_default();
-                    if !evaluate(cond, &check).unwrap_or(false) {
-                        return Err(TransactionFailureReason::ConditionCheckFailed { index });
-                    }
-                }
+                self.validate_condition(condition.as_ref(), &current, index)?;
             }
             TransactWriteItem::ConditionCheck { condition, .. } => {
-                let check = current.unwrap_or_default();
-                if !evaluate(condition, &check).unwrap_or(false) {
-                    return Err(TransactionFailureReason::ConditionCheckFailed { index });
-                }
+                self.validate_condition(Some(condition), &current, index)?;
             }
         }
 

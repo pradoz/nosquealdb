@@ -28,7 +28,7 @@ pub use transaction::{
 };
 pub use types::{
     AttributeValue, DecodeError, Item, KeyAttribute, KeySchema, KeyType, KeyValidationError,
-    KeyValue, PrimaryKey, ReturnValue, WriteResult,
+    KeyValue, PrimaryKey, ReturnValue, WriteResult, encode_key_component, escape_key_chars,
 };
 pub use update::{UpdateAction, UpdateExecutor, UpdateExpression};
 

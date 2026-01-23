@@ -38,6 +38,10 @@ impl KeyValue {
         }
     }
 
+    pub fn encode(&self) -> String {
+        encode_key_component(self)
+    }
+
     pub fn to_attribute_value(&self) -> AttributeValue {
         match self {
             Self::S(s) => AttributeValue::S(s.clone()),
@@ -123,7 +127,7 @@ impl PrimaryKey {
     }
 }
 
-fn encode_key_component(key: &KeyValue) -> String {
+pub fn encode_key_component(key: &KeyValue) -> String {
     match key {
         KeyValue::S(s) => format!("S:{}", escape_key_chars(s)),
         KeyValue::N(n) => format!("N:{}", n),
@@ -131,13 +135,13 @@ fn encode_key_component(key: &KeyValue) -> String {
     }
 }
 
-fn escape_key_chars(s: &str) -> String {
+pub fn escape_key_chars(s: &str) -> String {
     let mut result = String::with_capacity(s.len());
     for c in s.chars() {
         match c {
-            '#' => result.push_str("\\#"),
-            ':' => result.push_str("\\:"),
-            '\\' => result.push_str("\\\\"),
+            '#' => result.push_str("\\#"), // delimiter
+            ':' => result.push_str("\\:"), // separator
+            '\\' => result.push_str("\\\\"), // escape
             _ => result.push(c),
         }
     }
