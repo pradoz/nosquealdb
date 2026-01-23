@@ -65,7 +65,12 @@ fn compare_keys(a: &KeyValue, b: &KeyValue) -> Ordering {
 }
 
 fn compare_numeric_strings(a: &str, b: &str) -> Ordering {
-    // TODO: arbitrary precision
+    // try integer comparison first for exact precision
+    if let (Ok(x), Ok(y)) = (a.parse::<i64>(), b.parse::<i64>()) {
+        return x.cmp(&y);
+    }
+
+    // fall boat to float comparison
     let x: f64 = a.parse().unwrap_or(f64::NAN);
     let y: f64 = b.parse().unwrap_or(f64::NAN);
     x.partial_cmp(&y).unwrap_or(Ordering::Equal)
