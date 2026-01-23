@@ -70,10 +70,8 @@ impl Table {
         let name = gsi.name().to_string();
 
         let mut gsi = gsi;
-        for item in self.scan_all().unwrap_or_default() {
-            if let Some(pk) = item.extract_key(&self.schema) {
-                gsi.put(pk, &item);
-            }
+        for (pk, item) in self.iter_with_keys() {
+            gsi.put(pk, &item);
         }
 
         self.gsis.insert(name, gsi);
@@ -92,10 +90,8 @@ impl Table {
         let name = lsi.name().to_string();
 
         let mut lsi = lsi;
-        for item in self.scan_all().unwrap_or_default() {
-            if let Some(pk) = item.extract_key(&self.schema) {
-                lsi.put(&pk, &item);
-            }
+        for (pk, item) in self.iter_with_keys() {
+            lsi.put(&pk, &item);
         }
 
         self.lsis.insert(name, lsi);
@@ -206,12 +202,11 @@ impl Table {
         let mut items = Vec::new();
         let limit = request.limit.unwrap_or(usize::MAX);
 
-        for (_, value) in self.storage.iter() {
+        for (_, item) in self.iter_with_keys() {
             if items.len() >= limit {
                 break;
             }
 
-            let item = self.decode_item(value)?;
             if let Some(ref filter) = request.filter {
                 if !evaluate(filter, &item).unwrap_or(false) {
                     continue;
@@ -512,8 +507,8 @@ impl Table {
         let executor = QueryExecutor::new(&self.schema);
         executor.validate_condition(&key_condition)?;
 
-        let items = self.iter_with_keys()?;
-        let mut result = executor.execute(items.into_iter(), &key_condition, &options)?;
+        let items = self.iter_with_keys();
+        let mut result = executor.execute(items, &key_condition, &options)?;
 
         if let Some(filter) = filter {
             let filtered: Vec<Item> = result
@@ -598,18 +593,12 @@ impl Table {
         }
     }
 
-    /// TODO: performance: this allocates a Vec for all items. For large tables,
-    /// consider returning an iterator that decodes lazily to reduce memory pressure
-    fn iter_with_keys(&self) -> TableResult<Vec<(PrimaryKey, Item)>> {
-        let mut result = Vec::new();
-        for (_, value) in self.storage.iter() {
-            let item = self.decode_item(value)?;
-            if let Some(pk) = item.extract_key(&self.schema) {
-                result.push((pk, item));
-            }
-        }
-
-        Ok(result)
+    fn iter_with_keys(&self) -> impl Iterator<Item = (PrimaryKey, Item)> + '_ {
+        self.storage.iter().filter_map(|(_, value)| {
+            let item = self.decode_item(value).ok()?;
+            let pk = item.extract_key(&self.schema)?;
+            Some((pk, item))
+        })
     }
 
     fn update_indexes_on_put(&mut self, pk: &PrimaryKey, item: &Item) {
@@ -1657,6 +1646,34 @@ mod tests {
                 .query_gsi("by-status", KeyCondition::pk("pending"))
                 .unwrap();
             assert_eq!(result.count, 2);
+        }
+    }
+
+    mod iter_with_keys {
+        use super::*;
+
+        #[test]
+        fn lazily_consumable() {
+            let mut table = simple_table();
+
+            for i in 0..100 {
+                table
+                    .put_item(Item::new().with_s("user_id", format!("user{}", i)))
+                    .unwrap();
+            }
+
+            let chunk: Vec<_> = table.iter_with_keys().take(10).collect();
+            assert_eq!(chunk.len(), 10);
+
+            let all: Vec<_> = table.iter_with_keys().collect();
+            assert_eq!(all.len(), 100);
+        }
+
+        #[test]
+        fn skips_invalid_items() {
+            let table = simple_table();
+            let items: Vec<_> = table.iter_with_keys().collect();
+            assert!(items.is_empty());
         }
     }
 }
