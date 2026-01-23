@@ -2,7 +2,9 @@ use std::collections::HashMap;
 
 use crate::error::TableResult;
 use crate::query::{KeyCondition, QueryExecutor, QueryOptions, QueryResult};
-use crate::types::{Item, KeyAttribute, KeySchema, KeyType, KeyValue, PrimaryKey, encode_key_component};
+use crate::types::{
+    Item, KeyAttribute, KeySchema, KeyType, KeyValue, PrimaryKey, encode_key_component,
+};
 
 use super::projection::Projection;
 

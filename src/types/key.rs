@@ -139,8 +139,8 @@ pub fn escape_key_chars(s: &str) -> String {
     let mut result = String::with_capacity(s.len());
     for c in s.chars() {
         match c {
-            '#' => result.push_str("\\#"), // delimiter
-            ':' => result.push_str("\\:"), // separator
+            '#' => result.push_str("\\#"),   // delimiter
+            ':' => result.push_str("\\:"),   // separator
             '\\' => result.push_str("\\\\"), // escape
             _ => result.push(c),
         }

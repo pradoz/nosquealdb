@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use super::types::{TransactGetItem, TransactGetResult, TransactWriteItem};
-use crate::condition::{evaluate, Condition};
+use crate::condition::{Condition, evaluate};
 use crate::error::TableResult;
 use crate::types::{Item, KeySchema, PrimaryKey};
 use crate::update::UpdateExecutor;
