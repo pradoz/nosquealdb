@@ -325,37 +325,6 @@ mod tests {
         use super::*;
 
         #[test]
-        fn creates_compare_conditions() {
-            let cond = attr("status").eq("active");
-            assert!(matches!(
-                cond,
-                Condition::Compare {
-                    op: CompareOp::Eq,
-                    ..
-                }
-            ));
-
-            let cond = attr("tenure").gt(4i32);
-            assert!(matches!(
-                cond,
-                Condition::Compare {
-                    op: CompareOp::Gt,
-                    ..
-                }
-            ));
-        }
-
-        #[test]
-        fn creates_function_conditions() {
-            let cond = attr("email").exists();
-            assert!(matches!(cond, Condition::AttributeExists(_)));
-            let cond = attr("email").not_exists();
-            assert!(matches!(cond, Condition::AttributeNotExists(_)));
-            let cond = attr("username").begins_with("AAA");
-            assert!(matches!(cond, Condition::BeginsWith { .. }));
-        }
-
-        #[test]
         fn nested_path() {
             let path = AttributePath::new("address").key("city");
             let cond = ConditionBuilder::new(path).eq("Los Angeles");

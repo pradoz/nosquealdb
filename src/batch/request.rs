@@ -163,7 +163,7 @@ mod tests {
     }
 
     #[test]
-    fn write_from_items() {
+    fn write_from_vec_items() {
         let items = vec![
             Item::new().with_s("pk", "test1"),
             Item::new().with_s("pk", "test2"),

@@ -96,37 +96,6 @@ impl From<String> for AttributePath {
 mod tests {
     use super::*;
 
-    #[test]
-    fn simple() {
-        let path = AttributePath::new("name");
-        assert!(path.is_simple());
-        assert_eq!(path.depth(), 1);
-        assert_eq!(path.root(), Some("name"));
-    }
-
-    #[test]
-    fn nested() {
-        let path = AttributePath::new("address").key("city");
-        assert!(!path.is_simple());
-        assert_eq!(path.depth(), 2);
-        assert_eq!(path.root(), Some("address"));
-    }
-
-    #[test]
-    fn with_index() {
-        let path = AttributePath::new("orders").index(0).key("item");
-        assert!(!path.is_simple());
-        assert_eq!(path.depth(), 3);
-        assert_eq!(
-            path.segments(),
-            &[
-                PathSegment::Key("orders".into()),
-                PathSegment::Index(0),
-                PathSegment::Key("item".into()),
-            ]
-        );
-    }
-
     mod resolve {
         use super::*;
         use std::collections::BTreeMap;

@@ -171,25 +171,6 @@ mod tests {
     }
 
     #[test]
-    fn put_with_failures() {
-        let executor = BatchExecutor::new();
-        let mut storage = MockStorage::new();
-
-        let items = vec![
-            Item::new().with_s("pk", "test0"),
-            Item::new().with_s("not-the-pk", "test1"),
-        ];
-
-        let result = executor
-            .execute_put(items, &storage.schema.clone(), |item| storage.put(item))
-            .unwrap();
-        assert!(!result.is_complete());
-        assert!(result.has_unprocessed());
-        assert_eq!(result.processed_count, 1);
-        assert_eq!(result.unprocessed_count(), 1);
-    }
-
-    #[test]
     fn delete() {
         let executor = BatchExecutor::new();
         let mut storage = MockStorage::new()

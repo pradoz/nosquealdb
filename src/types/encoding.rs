@@ -342,20 +342,5 @@ mod tests {
             roundtrip(AttributeValue::Bool(false));
             roundtrip(AttributeValue::Null);
         }
-
-        #[test]
-        fn documents() {
-            roundtrip(AttributeValue::S("".into()));
-        }
-
-        #[test]
-        fn sets() {
-            roundtrip(AttributeValue::S("".into()));
-        }
-
-        #[test]
-        fn nested() {
-            roundtrip(AttributeValue::S("".into()));
-        }
     }
 }

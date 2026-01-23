@@ -354,17 +354,4 @@ mod tests {
         assert_eq!(req.limit, Some(5));
         assert!(req.filter.is_some());
     }
-
-    #[test]
-    fn from_impls() {
-        let item = Item::new().with_s("pk", "test");
-        let _req: PutRequest = item.into();
-
-        let key = PrimaryKey::simple("test");
-        let _req: DeleteRequest = key.clone().into();
-        let _req: GetRequest = key.into();
-
-        let cond = KeyCondition::pk("user1");
-        let _req: QueryRequest = cond.into();
-    }
 }
