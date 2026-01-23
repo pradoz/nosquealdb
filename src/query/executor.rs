@@ -57,13 +57,15 @@ impl QueryOptions {
 struct SortableKey {
     sk: Option<KeyValue>,
     unique_suffix: String,
+    sequence: usize,
 }
 
 impl SortableKey {
-    fn new(pk: &PrimaryKey) -> Self {
+    fn new(pk: &PrimaryKey, sequence: usize) -> Self {
         Self {
             sk: pk.sk.clone(),
             unique_suffix: pk.to_storage_key(),
+            sequence,
         }
     }
 }
@@ -81,14 +83,26 @@ impl Ord for SortableKey {
             (Some(a), Some(b)) => {
                 let key_cmp = compare_key_values(a, b);
                 if key_cmp == Ordering::Equal {
-                    self.unique_suffix.cmp(&other.unique_suffix)
+                    let suffix_cmp = self.unique_suffix.cmp(&other.unique_suffix);
+                    if suffix_cmp == Ordering::Equal {
+                        self.sequence.cmp(&other.sequence)
+                    } else {
+                        suffix_cmp
+                    }
                 } else {
                     key_cmp
                 }
             }
             (Some(_), None) => Ordering::Greater,
             (None, Some(_)) => Ordering::Less,
-            (None, None) => self.unique_suffix.cmp(&other.unique_suffix),
+            (None, None) => {
+                let suffix_cmp = self.unique_suffix.cmp(&other.unique_suffix);
+                if suffix_cmp == Ordering::Equal {
+                    self.sequence.cmp(&other.sequence)
+                } else {
+                    suffix_cmp
+                }
+            }
         }
     }
 }
@@ -114,6 +128,7 @@ impl<'a> QueryExecutor<'a> {
     ) -> TableResult<QueryResult> {
         let mut matching: BTreeMap<SortableKey, Item> = BTreeMap::new();
         let mut scanned = 0;
+        let mut sequence = 0usize;
 
         for (pk, item) in items {
             scanned += 1;
@@ -132,7 +147,8 @@ impl<'a> QueryExecutor<'a> {
                 }
             }
 
-            let sortable_key = SortableKey::new(&pk);
+            let sortable_key = SortableKey::new(&pk, sequence);
+            sequence += 1;
             matching.insert(sortable_key, item);
         }
 
@@ -403,9 +419,9 @@ mod tests {
             let pk2 = PrimaryKey::simple("user2");
             let pk3 = PrimaryKey::composite("user2", "order1");
 
-            let sk1 = SortableKey::new(&pk1);
-            let sk2 = SortableKey::new(&pk2);
-            let sk3 = SortableKey::new(&pk3);
+            let sk1 = SortableKey::new(&pk1, 0);
+            let sk2 = SortableKey::new(&pk2, 1);
+            let sk3 = SortableKey::new(&pk3, 2);
 
             // None < Some
             assert!(sk1 < sk3);
@@ -419,8 +435,8 @@ mod tests {
             let pk1 = PrimaryKey::composite("user1", "order1");
             let pk2 = PrimaryKey::composite("user2", "order1");
 
-            let sk1 = SortableKey::new(&pk1);
-            let sk2 = SortableKey::new(&pk2);
+            let sk1 = SortableKey::new(&pk1, 0);
+            let sk2 = SortableKey::new(&pk2, 1);
 
             // should use unique suffix
             assert_ne!(sk1, sk2);
