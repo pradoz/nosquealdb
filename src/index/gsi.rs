@@ -1,10 +1,10 @@
-use std::collections::HashMap;
-
 use crate::error::TableResult;
 use crate::query::{KeyCondition, QueryExecutor, QueryOptions, QueryResult};
 use crate::types::{Item, KeySchema, KeyValue, PrimaryKey};
 
 use super::projection::Projection;
+use super::storage::IndexStorage;
+
 
 #[derive(Debug)]
 pub struct GlobalSecondaryIndex {
@@ -12,8 +12,7 @@ pub struct GlobalSecondaryIndex {
     schema: KeySchema,
     projection: Projection,
     table_schema: KeySchema,
-    data: HashMap<String, (PrimaryKey, Item)>, // primary data store
-    table_key_index: HashMap<String, String>,  // reverse index for O(1) deletion
+    storage: IndexStorage<(PrimaryKey, Item)>,
 }
 
 impl GlobalSecondaryIndex {
@@ -28,54 +27,62 @@ impl GlobalSecondaryIndex {
             schema,
             projection,
             table_schema,
-            data: HashMap::new(),
-            table_key_index: HashMap::new(),
+            storage: IndexStorage::new(),
         }
     }
 
+    #[inline]
     pub fn name(&self) -> &str {
         &self.name
     }
 
+    #[inline]
     pub fn schema(&self) -> &KeySchema {
         &self.schema
     }
 
+    #[inline]
     pub fn projection(&self) -> &Projection {
         &self.projection
     }
 
+    #[inline]
     pub fn len(&self) -> usize {
-        self.data.len()
+        self.storage.len()
     }
 
+    #[inline]
     pub fn is_empty(&self) -> bool {
-        self.data.is_empty()
+        self.storage.is_empty()
     }
 
     pub fn put(&mut self, table_key: PrimaryKey, item: &Item) -> Option<Item> {
-        let old = self.remove_by_table_key(&table_key);
-
         // if an item doesn't have index keys, it's a sparse index - item just isn't indexed
-        if let Some(index_key) = self.extract_index_key(item) {
-            let storage_key = self.make_storage_key(&index_key, &table_key);
-            let table_storage_key = table_key.to_storage_key();
-            let projected = self
-                .projection
-                .project_item(item, &self.table_schema, &self.schema);
+        let index_key = match self.extract_index_key(item) {
+            Some(k) => k,
+            None => {
+                return self
+                    .storage
+                    .remove_by_table_key(&table_key.to_storage_key())
+                    .map(|(_, item)| item);
+            }
+        };
 
-            // update reverse index
-            self.table_key_index
-                .insert(table_storage_key, storage_key.clone());
-            // update primary
-            self.data.insert(storage_key, (table_key, projected));
-        }
+        let storage_key = self.make_storage_key(&index_key, &table_key);
+        let table_storage_key = table_key.to_storage_key();
+        let projected = self
+            .projection
+            .project_item(item, &self.table_schema, &self.schema);
 
-        old
+        self.storage
+            .put(table_storage_key, storage_key, (table_key, projected))
+            .map(|(_, item)| item)
     }
 
     pub fn delete(&mut self, table_key: &PrimaryKey) -> Option<Item> {
-        self.remove_by_table_key(table_key)
+        self.storage
+            .remove_by_table_key(&table_key.to_storage_key())
+            .map(|(_, item)| item)
     }
 
     pub fn query(&self, condition: KeyCondition) -> TableResult<QueryResult> {
@@ -90,7 +97,7 @@ impl GlobalSecondaryIndex {
         let executor = QueryExecutor::new(&self.schema);
         executor.validate_condition(&condition)?;
 
-        let items = self.data.values().filter_map(|(_, item)| {
+        let items = self.storage.values().filter_map(|(_, item)| {
             self.extract_index_key(item)
                 .map(|index_key| (index_key, item.clone()))
         });
@@ -99,7 +106,11 @@ impl GlobalSecondaryIndex {
     }
 
     pub fn scan(&self) -> Vec<&Item> {
-        self.data.values().map(|(_, item)| item).collect()
+        self.storage.values().map(|(_, item)| item).collect()
+    }
+
+    pub fn clear(&mut self) {
+        self.storage.clear();
     }
 
     fn extract_index_key(&self, item: &Item) -> Option<PrimaryKey> {
@@ -119,26 +130,13 @@ impl GlobalSecondaryIndex {
         Some(PrimaryKey { pk, sk })
     }
 
+    #[inline]
     fn make_storage_key(&self, index_key: &PrimaryKey, table_key: &PrimaryKey) -> String {
         format!(
             "{}|{}",
             index_key.to_storage_key(),
             table_key.to_storage_key()
         )
-    }
-
-    fn remove_by_table_key(&mut self, table_key: &PrimaryKey) -> Option<Item> {
-        let to_remove = table_key.to_storage_key();
-        if let Some(gsi_key) = self.table_key_index.remove(&to_remove) {
-            self.data.remove(&gsi_key).map(|(_, item)| item)
-        } else {
-            None
-        }
-    }
-
-    pub fn clear(&mut self) {
-        self.data.clear();
-        self.table_key_index.clear();
     }
 }
 
@@ -214,7 +212,6 @@ mod tests {
         gsi.put(table_key, &item);
 
         assert_eq!(gsi.len(), 1);
-        assert_eq!(gsi.table_key_index.len(), 1);
     }
 
     #[test]
@@ -231,7 +228,6 @@ mod tests {
         gsi.put(table_key, &item);
 
         assert!(gsi.is_empty());
-        assert!(gsi.table_key_index.is_empty());
     }
 
     #[test]
@@ -301,12 +297,8 @@ mod tests {
         );
 
         assert_eq!(gsi.len(), 1);
-        assert_eq!(gsi.table_key_index.len(), 1);
-
         gsi.delete(&table_key);
-
         assert!(gsi.is_empty());
-        assert!(gsi.table_key_index.is_empty());
     }
 
     #[test]
@@ -327,7 +319,6 @@ mod tests {
         );
 
         assert_eq!(gsi.len(), 1);
-        assert_eq!(gsi.table_key_index.len(), 1);
 
         // should find under new date
         let result = gsi.query(KeyCondition::pk("2026-01-31")).unwrap();
@@ -379,35 +370,8 @@ mod tests {
             );
         }
         assert_eq!(gsi.len(), 10);
-        assert_eq!(gsi.table_key_index.len(), 10);
 
         gsi.clear();
         assert_eq!(gsi.len(), 0);
-        assert_eq!(gsi.table_key_index.len(), 0);
-    }
-
-    #[test]
-    fn reverse_index_consistency() {
-        let mut gsi = create_gsi();
-
-        for i in 0..10 {
-            let table_key = PrimaryKey::composite("user1", format!("order{:03}", i));
-            gsi.put(
-                table_key,
-                &sample_order("user1", &format!("order{:03}", i), "2026-01-22", i * 100),
-            );
-        }
-        assert_eq!(gsi.len(), 10);
-        assert_eq!(gsi.table_key_index.len(), 10);
-
-        for i in 0..5 {
-            let table_key = PrimaryKey::composite("user1", format!("order{:03}", i));
-            gsi.delete(&table_key);
-        }
-        assert_eq!(gsi.len(), 5);
-        assert_eq!(gsi.table_key_index.len(), 5);
-
-        let result = gsi.query(KeyCondition::pk("2026-01-22")).unwrap();
-        assert_eq!(result.count, 5);
     }
 }
