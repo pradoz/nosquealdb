@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use crate::error::TableResult;
 use crate::query::{KeyCondition, QueryExecutor, QueryOptions, QueryResult};
 use crate::types::{
@@ -7,6 +5,7 @@ use crate::types::{
 };
 
 use super::projection::Projection;
+use super::storage::IndexStorage;
 
 /// Local Secondary Index - same partition key as table, different sort key.
 #[derive(Debug)]
@@ -15,8 +14,7 @@ pub struct LocalSecondaryIndex {
     sort_key: KeyAttribute,
     projection: Projection,
     table_schema: KeySchema,
-    data: HashMap<String, Item>,              // primary data store
-    table_key_index: HashMap<String, String>, // reverse index for O(1) deletion
+    storage: IndexStorage<Item>,
 }
 
 impl LocalSecondaryIndex {
@@ -31,58 +29,61 @@ impl LocalSecondaryIndex {
             sort_key,
             projection,
             table_schema,
-            data: HashMap::new(),
-            table_key_index: HashMap::new(),
+            storage: IndexStorage::new(),
         }
     }
 
+    #[inline]
     pub fn name(&self) -> &str {
         &self.name
     }
+    #[inline]
     pub fn sort_key_name(&self) -> &str {
         &self.sort_key.name
     }
+    #[inline]
     pub fn sort_key_type(&self) -> KeyType {
         self.sort_key.key_type
     }
+    #[inline]
     pub fn projection(&self) -> &Projection {
         &self.projection
     }
+
     pub fn schema(&self) -> KeySchema {
         KeySchema {
             partition_key: self.table_schema.partition_key.clone(),
             sort_key: Some(self.sort_key.clone()),
         }
     }
+    #[inline]
     pub fn len(&self) -> usize {
-        self.data.len()
+        self.storage.len()
     }
+    #[inline]
     pub fn is_empty(&self) -> bool {
-        self.data.is_empty()
+        self.storage.is_empty()
     }
 
     pub fn put(&mut self, table_key: &PrimaryKey, item: &Item) -> Option<Item> {
-        let old = self.remove_by_table_key(table_key);
+        let lsi_sk = match self.extract_lsi_sort_key(item) {
+            Some(sk) => sk,
+            None => {
+                return self.storage.remove_by_table_key(&table_key.to_storage_key());
+            }
+        };
 
-        if let Some(lsi_sk) = self.extract_lsi_sort_key(item) {
-            let storage_key = self.make_storage_key(&table_key.pk, &lsi_sk, table_key);
-            let table_storage_key = table_key.to_storage_key();
-            let projected = self
-                .projection
-                .project_item(item, &self.table_schema, &self.schema());
+        let storage_key = self.make_storage_key(&table_key.pk, &lsi_sk, table_key);
+        let table_storage_key = table_key.to_storage_key();
+        let projected = self
+            .projection
+            .project_item(item, &self.table_schema, &self.schema());
 
-            // update reverse index
-            self.table_key_index
-                .insert(table_storage_key, storage_key.clone());
-            // update primary
-            self.data.insert(storage_key, projected);
-        }
-
-        old
+        self.storage.put(table_storage_key, storage_key, projected)
     }
 
     pub fn delete(&mut self, table_key: &PrimaryKey) -> Option<Item> {
-        self.remove_by_table_key(table_key)
+        self.storage.remove_by_table_key(&table_key.to_storage_key())
     }
 
     pub fn query(&self, condition: KeyCondition) -> TableResult<QueryResult> {
@@ -98,13 +99,17 @@ impl LocalSecondaryIndex {
         let executor = QueryExecutor::new(&schema);
         executor.validate_condition(&condition)?;
 
-        let items = self.data.values().filter_map(|item| {
+        let items = self.storage.values().filter_map(|item| {
             let pk = self.extract_pk_from_item(item)?;
             let sk = self.extract_lsi_sort_key(item)?;
             Some((PrimaryKey { pk, sk: Some(sk) }, item.clone()))
         });
 
         executor.execute(items, &condition, &options)
+    }
+
+    pub fn clear(&mut self) {
+        self.storage.clear();
     }
 
     fn extract_pk_from_item(&self, item: &Item) -> Option<KeyValue> {
@@ -117,6 +122,7 @@ impl LocalSecondaryIndex {
         KeyValue::from_attribute_with_type(attr, self.sort_key.key_type)
     }
 
+    #[inline]
     fn make_storage_key(&self, pk: &KeyValue, lsi_sk: &KeyValue, table_key: &PrimaryKey) -> String {
         format!(
             "{}|{}|{}",
@@ -124,21 +130,6 @@ impl LocalSecondaryIndex {
             encode_key_component(lsi_sk),
             table_key.to_storage_key()
         )
-    }
-
-    fn remove_by_table_key(&mut self, table_key: &PrimaryKey) -> Option<Item> {
-        let to_remove = table_key.to_storage_key();
-
-        if let Some(lsi_key) = self.table_key_index.remove(&to_remove) {
-            self.data.remove(&lsi_key)
-        } else {
-            None
-        }
-    }
-
-    pub fn clear(&mut self) {
-        self.data.clear();
-        self.table_key_index.clear();
     }
 }
 
@@ -217,7 +208,6 @@ mod tests {
 
         lsi.put(&table_key, &item);
         assert_eq!(lsi.len(), 1);
-        assert_eq!(lsi.table_key_index.len(), 1);
     }
 
     #[test]
@@ -234,7 +224,6 @@ mod tests {
         lsi.put(&table_key, &item);
 
         assert!(lsi.is_empty());
-        assert!(lsi.table_key_index.is_empty());
     }
 
     #[test]
@@ -304,13 +293,10 @@ mod tests {
             &table_key,
             &sample_order("user1", "order001", "2026-01-08", 100),
         );
+
         assert_eq!(lsi.len(), 1);
-        assert_eq!(lsi.table_key_index.len(), 1);
-
         lsi.delete(&table_key);
-
         assert!(lsi.is_empty());
-        assert!(lsi.table_key_index.is_empty());
     }
 
     #[test]
@@ -330,7 +316,6 @@ mod tests {
             &sample_order("user1", "order001", "2026-01-20", 150),
         );
         assert_eq!(lsi.len(), 1);
-        assert_eq!(lsi.table_key_index.len(), 1);
 
         let result = lsi.query(KeyCondition::pk("user1")).unwrap();
         assert_eq!(
@@ -356,11 +341,9 @@ mod tests {
             );
         }
         assert_eq!(lsi.len(), 10);
-        assert_eq!(lsi.table_key_index.len(), 10);
 
         lsi.clear();
         assert_eq!(lsi.len(), 0);
-        assert_eq!(lsi.table_key_index.len(), 0);
     }
 
     #[test]
@@ -380,14 +363,12 @@ mod tests {
             );
         }
         assert_eq!(lsi.len(), 10);
-        assert_eq!(lsi.table_key_index.len(), 10);
 
         for i in 0..5 {
             let table_key = PrimaryKey::composite("user1", format!("order{:03}", i));
             lsi.delete(&table_key);
         }
         assert_eq!(lsi.len(), 5);
-        assert_eq!(lsi.table_key_index.len(), 5);
 
         let result = lsi.query(KeyCondition::pk("user1")).unwrap();
         assert_eq!(result.count, 5);
