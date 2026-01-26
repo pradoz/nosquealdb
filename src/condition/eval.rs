@@ -1,7 +1,7 @@
 use super::expression::{AttrType, CompareOp, Condition};
-use crate::error::{EvalError, EvalResult};
+use crate::error::EvalResult;
 use crate::types::{AttributeValue, Item};
-use std::cmp::Ordering;
+use crate::utils::{compare_values, numbers_equal};
 
 pub fn evaluate(condition: &Condition, item: &Item) -> EvalResult {
     match condition {
@@ -201,55 +201,6 @@ fn values_equal(a: &AttributeValue, b: &AttributeValue) -> bool {
     }
 }
 
-fn numbers_equal(a: &str, b: &str) -> bool {
-    compare_numbers(a, b) == Ordering::Equal
-}
-
-fn compare_values(a: &AttributeValue, b: &AttributeValue) -> Result<Ordering, EvalError> {
-    match (a, b) {
-        (AttributeValue::S(a), AttributeValue::S(b)) => Ok(a.cmp(b)),
-        (AttributeValue::N(a), AttributeValue::N(b)) => Ok(compare_numbers(a, b)),
-        (AttributeValue::B(a), AttributeValue::B(b)) => Ok(a.cmp(b)),
-        _ => Err(EvalError::TypeMismatch {
-            left: a.type_name(),
-            right: b.type_name(),
-        }),
-    }
-}
-
-const RELATIVE_EPSILON: f64 = 1e-12;
-
-fn compare_numbers(a: &str, b: &str) -> Ordering {
-    // try integer comparison first for exact precision
-    if let (Ok(x), Ok(y)) = (a.parse::<i64>(), b.parse::<i64>()) {
-        return x.cmp(&y);
-    }
-
-    // fall back to float comparison with relative epsilon
-    match (a.parse::<f64>(), b.parse::<f64>()) {
-        (Ok(x), Ok(y)) => {
-            // fall back to string comparison for NaN values
-            if x.is_nan() || y.is_nan() {
-                return a.cmp(b);
-            }
-
-            let max_abs = x.abs().max(y.abs()).max(1.0);
-            let epsilon = RELATIVE_EPSILON * max_abs;
-            let diff = x - y;
-
-            if diff.abs() < epsilon {
-                Ordering::Equal
-            } else if diff < 0.0 {
-                Ordering::Less
-            } else {
-                Ordering::Greater
-            }
-        }
-        // fall back to string comparison when parsing fails
-        _ => a.cmp(b),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -272,55 +223,6 @@ mod tests {
                 "scores",
                 AttributeValue::Ns(["85", "90", "95"].into_iter().map(String::from).collect()),
             )
-    }
-
-    mod numeric_comparison {
-        use super::*;
-
-        #[test]
-        fn integer() {
-            assert_eq!(compare_numbers("42", "42"), Ordering::Equal);
-            assert_eq!(compare_numbers("10", "20"), Ordering::Less);
-            assert_eq!(compare_numbers("100", "50"), Ordering::Greater);
-            assert_eq!(compare_numbers("-5", "5"), Ordering::Less);
-            assert_eq!(compare_numbers("0", "-0"), Ordering::Equal);
-        }
-
-        #[test]
-        fn float() {
-            assert_eq!(
-                compare_numbers("3.1415926535", "3.1415926535"),
-                Ordering::Equal
-            );
-            assert_eq!(compare_numbers("1.5", "2.5"), Ordering::Less);
-            assert_eq!(compare_numbers("10.0", "5.0"), Ordering::Greater);
-
-            // should not be equal, difference too large
-            assert_eq!(compare_numbers("1.0", "1.01"), Ordering::Less);
-            assert_eq!(compare_numbers("1.0", "0.99"), Ordering::Greater);
-
-            // large numbers with relative difference less than epsilon
-            assert_eq!(
-                compare_numbers("1000000000.0", "1000000000.0000001"),
-                Ordering::Equal
-            );
-            assert_eq!(
-                compare_numbers("1000000000.0", "1000000001.0"),
-                Ordering::Less
-            );
-
-            // small numbers
-            assert_eq!(compare_numbers("0.0000001", "0.0000001"), Ordering::Equal);
-            assert_eq!(compare_numbers("0.0000001", "0.0000002"), Ordering::Less);
-            assert_eq!(compare_numbers("42", "42.0"), Ordering::Equal);
-            assert_eq!(compare_numbers("10", "10.5"), Ordering::Less);
-        }
-
-        #[test]
-        fn float_and_integer() {
-            assert_eq!(compare_numbers("42", "42.0"), Ordering::Equal);
-            assert_eq!(compare_numbers("10", "10.5"), Ordering::Less);
-        }
     }
 
     mod equality {

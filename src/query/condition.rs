@@ -38,6 +38,19 @@ impl SortKeyOp {
         Self::BeginsWith(prefix.into())
     }
 
+    #[inline]
+    pub fn value(&self) -> &KeyValue {
+        match self {
+            Self::Eq(v)
+            | Self::Lt(v)
+            | Self::Le(v)
+            | Self::Gt(v)
+            | Self::Ge(v)
+            | Self::BeginsWith(v) => v,
+            Self::Between { low, .. } => low,
+        }
+    }
+
     pub fn matches(&self, value: &KeyValue) -> bool {
         match self {
             SortKeyOp::Eq(target) => compare_keys(value, target) == Ordering::Equal,
@@ -76,11 +89,11 @@ fn compare_numeric_strings(a: &str, b: &str) -> Ordering {
     x.partial_cmp(&y).unwrap_or(Ordering::Equal)
 }
 
+#[inline]
 fn key_begins_with(value: &KeyValue, prefix: &KeyValue) -> bool {
     match (value, prefix) {
         (KeyValue::S(v), KeyValue::S(p)) => v.starts_with(p),
         (KeyValue::B(v), KeyValue::B(p)) => v.starts_with(p),
-        // no prefix matching for numeric values
         _ => false,
     }
 }

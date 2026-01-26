@@ -1,12 +1,11 @@
-use std::cmp::Ordering;
-use std::collections::BTreeMap;
-use std::usize;
-
 use crate::error::{TableError, TableResult};
 use crate::types::{Item, KeySchema, KeyValidationError, KeyValue, PrimaryKey};
 use crate::utils::compare_key_values;
 
-use super::condition::{KeyCondition, SortKeyOp};
+use super::condition::KeyCondition;
+
+use std::cmp::Ordering;
+use std::collections::BTreeMap;
 
 #[derive(Debug, Clone)]
 pub struct QueryResult {
@@ -59,15 +58,17 @@ impl QueryOptions {
 struct SortableItem {
     sk: Option<KeyValue>,
     storage_key: String,
+    sequence: usize,
     item: Item,
 }
 
 impl SortableItem {
     #[inline]
-    fn new(pk: &PrimaryKey, item: Item) -> Self {
+    fn new(pk: &PrimaryKey, item: Item, sequence: usize) -> Self {
         Self {
             sk: pk.sk.clone(),
             storage_key: pk.to_storage_key(),
+            sequence,
             item,
         }
     }
@@ -85,14 +86,19 @@ impl Ord for SortableItem {
             (Some(a), Some(b)) => {
                 let key_cmp = compare_key_values(a, b);
                 if key_cmp == Ordering::Equal {
-                    self.storage_key.cmp(&other.storage_key)
+                    self.storage_key
+                        .cmp(&other.storage_key)
+                        .then(self.sequence.cmp(&other.sequence))
                 } else {
                     key_cmp
                 }
             }
             (Some(_), None) => Ordering::Greater,
             (None, Some(_)) => Ordering::Less,
-            (None, None) => self.storage_key.cmp(&other.storage_key),
+            (None, None) => self
+                .storage_key
+                .cmp(&other.storage_key)
+                .then(self.sequence.cmp(&other.sequence)),
         }
     }
 }
@@ -114,8 +120,9 @@ impl<'a> QueryExecutor<'a> {
         options: &QueryOptions,
     ) -> TableResult<QueryResult> {
         let mut scanned = 0usize;
+        let mut sequence = 0usize;
 
-        options.limit.unwrap_or(64).min(1024);
+        let _ = options.limit.unwrap_or(64).min(1024);
         let mut matching: BTreeMap<SortableItem, ()> = BTreeMap::new();
 
         for (pk, item) in items {
@@ -127,12 +134,13 @@ impl<'a> QueryExecutor<'a> {
 
             if let Some(sk_op) = &condition.sort_key {
                 match &pk.sk {
-                    Some(sk) if !sk_op.matches(sk) => {}
+                    Some(sk) if sk_op.matches(sk) => {}
                     _ => continue,
                 }
             }
 
-            let sortable = SortableItem::new(&pk, item);
+            let sortable = SortableItem::new(&pk, item, sequence);
+            sequence += 1;
             matching.insert(sortable, ());
         }
 
@@ -183,7 +191,7 @@ impl<'a> QueryExecutor<'a> {
         if let Some(sk_op) = &condition.sort_key {
             match &self.schema.sort_key {
                 Some(sk_def) => {
-                    let sk_value = get_sk_value_from_op(sk_op);
+                    let sk_value = sk_op.value();
                     if !sk_def.key_type.matches(sk_value) {
                         return Err(TableError::InvalidKey(KeyValidationError::TypeMismatch {
                             name: sk_def.name.clone(),
@@ -300,7 +308,7 @@ mod tests {
         let result = executor
             .execute(
                 test_items().into_iter(),
-                &KeyCondition::pk("user1").sk_between("order#002", "order#003"),
+                &KeyCondition::pk("user1").sk_begins_with("order"),
                 &QueryOptions::new().with_limit(2),
             )
             .unwrap();
@@ -316,13 +324,13 @@ mod tests {
         let result = executor
             .execute(
                 test_items().into_iter(),
-                &KeyCondition::pk("user1").sk_between("order#002", "order#003"),
+                &KeyCondition::pk("user1").sk_begins_with("order"),
                 &QueryOptions::new().with_limit(2).reverse(),
             )
             .unwrap();
         assert_eq!(result.count, 2);
         assert_eq!(result.items[0].get("sk").unwrap().as_s(), Some("order#003"));
-        assert_eq!(result.items[1].get("sk").unwrap().as_s(), Some("order#001"));
+        assert_eq!(result.items[1].get("sk").unwrap().as_s(), Some("order#002"));
     }
 
     #[test]

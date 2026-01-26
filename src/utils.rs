@@ -1,3 +1,8 @@
+use crate::error::EvalError;
+use crate::types::{AttributeValue, KeyValue};
+use std::borrow::Cow;
+use std::cmp::Ordering;
+
 pub fn base64_encode(data: &[u8]) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
@@ -75,6 +80,74 @@ pub fn base64_decode(input: &str) -> Option<Vec<u8>> {
     }
 
     Some(result)
+}
+
+#[inline]
+pub fn compare_key_values(a: &KeyValue, b: &KeyValue) -> Ordering {
+    match (a, b) {
+        (KeyValue::S(a), KeyValue::S(b)) => a.cmp(b),
+        (KeyValue::N(a), KeyValue::N(b)) => compare_numeric_strings(a, b),
+        (KeyValue::B(a), KeyValue::B(b)) => a.cmp(b),
+        // different types: compare by type name for consistent ordering
+        _ => a.type_name().cmp(b.type_name()),
+    }
+}
+
+#[inline]
+pub fn compare_values(a: &AttributeValue, b: &AttributeValue) -> Result<Ordering, EvalError> {
+    match (a, b) {
+        (AttributeValue::S(a), AttributeValue::S(b)) => Ok(a.cmp(b)),
+        (AttributeValue::N(a), AttributeValue::N(b)) => Ok(compare_numeric_strings(a, b)),
+        (AttributeValue::B(a), AttributeValue::B(b)) => Ok(a.cmp(b)),
+        _ => Err(EvalError::TypeMismatch {
+            left: a.type_name(),
+            right: b.type_name(),
+        }),
+    }
+}
+
+#[inline]
+pub fn compare_numeric_strings(a: &str, b: &str) -> Ordering {
+    // try integer comparison first for exact precision
+    if let (Ok(x), Ok(y)) = (a.parse::<i64>(), b.parse::<i64>()) {
+        return x.cmp(&y);
+    }
+
+    // fall back to float comparison
+    match (a.parse::<f64>(), b.parse::<f64>()) {
+        (Ok(x), Ok(y)) => x.partial_cmp(&y).unwrap_or(Ordering::Equal),
+        // if parsing fails, fall back to string comparison
+        _ => a.cmp(b),
+    }
+}
+
+#[inline]
+pub fn numbers_equal(a: &str, b: &str) -> bool {
+    compare_numeric_strings(a, b) == Ordering::Equal
+}
+
+const ESCAPE_CHARS: [char; 3] = ['#', ':', '\\'];
+
+/// Escape special characters in storage keys.
+/// Returns Cow::Borrowed if no escaping needed (common case optimization).
+#[inline]
+pub fn escape_key_chars(s: &str) -> Cow<'_, str> {
+    // Fast path: check if any escaping is needed
+    if !s.contains(|c| ESCAPE_CHARS.contains(&c)) {
+        return Cow::Borrowed(s);
+    }
+
+    // Slow path: build escaped string
+    let mut result = String::with_capacity(s.len() + 8);
+    for c in s.chars() {
+        match c {
+            '#' => result.push_str("\\#"),
+            ':' => result.push_str("\\:"),
+            '\\' => result.push_str("\\\\"),
+            _ => result.push(c),
+        }
+    }
+    Cow::Owned(result)
 }
 
 #[cfg(test)]

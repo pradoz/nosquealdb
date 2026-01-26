@@ -1,5 +1,7 @@
+use std::borrow::Cow;
+
 use super::AttributeValue;
-use crate::utils::base64_encode;
+use crate::utils::{base64_encode, escape_key_chars};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KeyValue {
@@ -38,7 +40,8 @@ impl KeyValue {
         }
     }
 
-    pub fn encode(&self) -> String {
+    #[inline]
+    pub fn encode(&self) -> Cow<'_, str> {
         encode_key_component(self)
     }
 
@@ -116,36 +119,30 @@ impl PrimaryKey {
     }
 
     pub fn to_storage_key(&self) -> String {
-        let pk_part = encode_key_component(&self.pk);
+        let pk_encoded = encode_key_component(&self.pk);
         match &self.sk {
             Some(sk) => {
-                let sk_part = encode_key_component(sk);
-                format!("{}#{}", pk_part, sk_part)
+                let sk_encoded = encode_key_component(sk);
+                format!("{}#{}", pk_encoded, sk_encoded)
             }
-            None => pk_part,
+            None => pk_encoded.into_owned(),
         }
     }
 }
 
-pub fn encode_key_component(key: &KeyValue) -> String {
+#[inline]
+pub fn encode_key_component(key: &KeyValue) -> Cow<'_, str> {
     match key {
-        KeyValue::S(s) => format!("S:{}", escape_key_chars(s)),
-        KeyValue::N(n) => format!("N:{}", n),
-        KeyValue::B(b) => format!("B:{}", base64_encode(b)),
-    }
-}
-
-pub fn escape_key_chars(s: &str) -> String {
-    let mut result = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '#' => result.push_str("\\#"),   // delimiter
-            ':' => result.push_str("\\:"),   // separator
-            '\\' => result.push_str("\\\\"), // escape
-            _ => result.push(c),
+        KeyValue::S(s) => {
+            let escaped = escape_key_chars(s);
+            match escaped {
+                Cow::Borrowed(b) => Cow::Owned(format!("S:{}", b)),
+                Cow::Owned(o) => Cow::Owned(format!("S:{}", o)),
+            }
         }
+        KeyValue::N(n) => Cow::Owned(format!("N:{}", n)),
+        KeyValue::B(b) => Cow::Owned(format!("B:{}", base64_encode(b))),
     }
-    result
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -195,6 +192,7 @@ impl KeyType {
         }
     }
 
+    #[inline]
     pub fn matches(&self, value: &KeyValue) -> bool {
         matches!(
             (self, value),
@@ -204,6 +202,7 @@ impl KeyType {
         )
     }
 
+    #[inline]
     pub fn matches_attribute(&self, value: &AttributeValue) -> bool {
         matches!(
             (self, value),

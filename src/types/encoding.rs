@@ -56,13 +56,16 @@ impl std::fmt::Display for DecodeError {
 
 impl std::error::Error for DecodeError {}
 
+const DEFAULT_ENCODER_CAPACITY: usize = 256;
 pub struct Encoder {
     buf: Vec<u8>,
 }
 
 impl Encoder {
     pub fn new() -> Self {
-        Self { buf: Vec::new() }
+        Self {
+            buf: Vec::with_capacity(DEFAULT_ENCODER_CAPACITY),
+        }
     }
 
     pub fn with_capacity(capacity: usize) -> Self {
