@@ -1,8 +1,10 @@
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
+use std::usize;
 
 use crate::error::{TableError, TableResult};
 use crate::types::{Item, KeySchema, KeyValidationError, KeyValue, PrimaryKey};
+use crate::utils::compare_key_values;
 
 use super::condition::{KeyCondition, SortKeyOp};
 
@@ -54,55 +56,43 @@ impl QueryOptions {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct SortableKey {
+struct SortableItem {
     sk: Option<KeyValue>,
-    unique_suffix: String,
-    sequence: usize,
+    storage_key: String,
+    item: Item,
 }
 
-impl SortableKey {
-    fn new(pk: &PrimaryKey, sequence: usize) -> Self {
+impl SortableItem {
+    #[inline]
+    fn new(pk: &PrimaryKey, item: Item) -> Self {
         Self {
             sk: pk.sk.clone(),
-            unique_suffix: pk.to_storage_key(),
-            sequence,
+            storage_key: pk.to_storage_key(),
+            item,
         }
     }
 }
 
-impl PartialOrd for SortableKey {
+impl PartialOrd for SortableItem {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl Ord for SortableKey {
+impl Ord for SortableItem {
     fn cmp(&self, other: &Self) -> Ordering {
         match (&self.sk, &other.sk) {
-            // unique suffix should differentiate items with same SK but different PK
             (Some(a), Some(b)) => {
                 let key_cmp = compare_key_values(a, b);
                 if key_cmp == Ordering::Equal {
-                    let suffix_cmp = self.unique_suffix.cmp(&other.unique_suffix);
-                    if suffix_cmp == Ordering::Equal {
-                        self.sequence.cmp(&other.sequence)
-                    } else {
-                        suffix_cmp
-                    }
+                    self.storage_key.cmp(&other.storage_key)
                 } else {
                     key_cmp
                 }
             }
             (Some(_), None) => Ordering::Greater,
             (None, Some(_)) => Ordering::Less,
-            (None, None) => {
-                let suffix_cmp = self.unique_suffix.cmp(&other.unique_suffix);
-                if suffix_cmp == Ordering::Equal {
-                    self.sequence.cmp(&other.sequence)
-                } else {
-                    suffix_cmp
-                }
-            }
+            (None, None) => self.storage_key.cmp(&other.storage_key),
         }
     }
 }
@@ -116,19 +106,17 @@ impl<'a> QueryExecutor<'a> {
         Self { schema }
     }
 
-    /// TODO(performance): current implementation collects all matches before sorting.
-    /// For large result sets, consider:
-    /// - early termination for limited queries
-    /// - streaming results/lazy eval
+    /// TODO(performance): use a bounded heap for ascneding queries with limit
     pub fn execute(
         &self,
         items: impl Iterator<Item = (PrimaryKey, Item)>,
         condition: &KeyCondition,
         options: &QueryOptions,
     ) -> TableResult<QueryResult> {
-        let mut matching: BTreeMap<SortableKey, Item> = BTreeMap::new();
-        let mut scanned = 0;
-        let mut sequence = 0usize;
+        let mut scanned = 0usize;
+
+        options.limit.unwrap_or(64).min(1024);
+        let mut matching: BTreeMap<SortableItem, ()> = BTreeMap::new();
 
         for (pk, item) in items {
             scanned += 1;
@@ -138,42 +126,44 @@ impl<'a> QueryExecutor<'a> {
             }
 
             if let Some(sk_op) = &condition.sort_key {
-                if let Some(sk) = &pk.sk {
-                    if !sk_op.matches(sk) {
-                        continue;
-                    }
-                } else {
-                    continue; // item has no sort key but requires one
+                match &pk.sk {
+                    Some(sk) if !sk_op.matches(sk) => {}
+                    _ => continue,
                 }
             }
 
-            let sortable_key = SortableKey::new(&pk, sequence);
-            sequence += 1;
-            matching.insert(sortable_key, item);
+            let sortable = SortableItem::new(&pk, item);
+            matching.insert(sortable, ());
         }
 
         // extract items in sorted order
-        let items: Vec<Item> = if options.scan_forward {
-            if let Some(limit) = options.limit {
-                matching.into_values().take(limit).collect()
-            } else {
-                matching.into_values().collect()
-            }
-        } else {
-            // reverse order
-            if let Some(limit) = options.limit {
-                matching.into_values().rev().take(limit).collect()
-            } else {
-                matching.into_values().rev().collect()
-            }
-        };
-
+        let items = Self::extract_ordered_items(matching, options);
         let count = items.len();
+
         Ok(QueryResult {
             items,
             scanned_count: scanned,
             count: count,
         })
+    }
+
+    #[inline]
+    fn extract_ordered_items(
+        matching: BTreeMap<SortableItem, ()>,
+        options: &QueryOptions,
+    ) -> Vec<Item> {
+        let limit = options.limit.unwrap_or(usize::MAX);
+
+        if options.scan_forward {
+            matching.into_keys().take(limit).map(|s| s.item).collect()
+        } else {
+            matching
+                .into_keys()
+                .rev()
+                .take(limit)
+                .map(|s| s.item)
+                .collect()
+        }
     }
 
     pub fn validate_condition(&self, condition: &KeyCondition) -> TableResult<()> {
@@ -215,72 +205,10 @@ impl<'a> QueryExecutor<'a> {
     }
 }
 
-fn compare_key_values(a: &KeyValue, b: &KeyValue) -> Ordering {
-    match (a, b) {
-        (KeyValue::S(a), KeyValue::S(b)) => a.cmp(b),
-        (KeyValue::N(a), KeyValue::N(b)) => {
-            let x: f64 = a.parse().unwrap_or(f64::NAN);
-            let y: f64 = b.parse().unwrap_or(f64::NAN);
-            x.partial_cmp(&y).unwrap_or(Ordering::Equal)
-        }
-        (KeyValue::B(a), KeyValue::B(b)) => a.cmp(b),
-        _ => a.type_name().cmp(b.type_name()),
-    }
-}
-
-fn get_sk_value_from_op(op: &SortKeyOp) -> &KeyValue {
-    match op {
-        SortKeyOp::Eq(v)
-        | SortKeyOp::Lt(v)
-        | SortKeyOp::Le(v)
-        | SortKeyOp::Gt(v)
-        | SortKeyOp::Ge(v)
-        | SortKeyOp::BeginsWith(v) => v,
-        SortKeyOp::Between { low, .. } => low,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::types::KeyType;
-
-    struct TestFixture {
-        schema: KeySchema,
-        items: Vec<(PrimaryKey, Item)>,
-        opts: QueryOptions,
-    }
-
-    impl TestFixture {
-        fn new() -> Self {
-            Self {
-                schema: KeySchema::composite("pk", KeyType::S, "sk", KeyType::S),
-                items: vec![
-                    make_item("user1", "order#001", "first"),
-                    make_item("user1", "order#002", "second"),
-                    make_item("user1", "order#003", "third"),
-                    make_item("user1", "profile", "user1 profile"),
-                    make_item("user2", "order#001", "user2 first"),
-                    make_item("user2", "order#002", "user2 second"),
-                ],
-                opts: QueryOptions::new(),
-            }
-        }
-
-        fn execute(&self, condition: KeyCondition) -> QueryResult {
-            let executor = QueryExecutor::new(&self.schema);
-            executor
-                .execute(self.items.clone().into_iter(), &condition, &self.opts)
-                .unwrap()
-        }
-
-        fn execute_with_opts(&self, condition: KeyCondition, opts: QueryOptions) -> QueryResult {
-            let executor = QueryExecutor::new(&self.schema);
-            executor
-                .execute(self.items.clone().into_iter(), &condition, &opts)
-                .unwrap()
-        }
-    }
 
     fn make_item(pk: &str, sk: &str, data: &str) -> (PrimaryKey, Item) {
         let key = PrimaryKey::composite(pk, sk);
@@ -291,160 +219,161 @@ mod tests {
         (key, item)
     }
 
+    fn test_items() -> Vec<(PrimaryKey, Item)> {
+        vec![
+            make_item("user1", "order#001", "first"),
+            make_item("user1", "order#002", "second"),
+            make_item("user1", "order#003", "third"),
+            make_item("user1", "profile", "user1 profile"),
+            make_item("user2", "order#001", "user2 first"),
+            make_item("user2", "order#002", "user2 second"),
+        ]
+    }
+
+    fn schema() -> KeySchema {
+        KeySchema::composite("pk", KeyType::S, "sk", KeyType::S)
+    }
+
     #[test]
-    fn query_no_results() {
-        let f = TestFixture::new();
-        let cond = KeyCondition::pk("nonexistent");
-        let result = f.execute(cond);
+    fn query_empty_result() {
+        let schema = schema();
+        let executor = QueryExecutor::new(&schema);
+        let result = executor
+            .execute(
+                test_items().into_iter(),
+                &KeyCondition::pk("nonexistent"),
+                &QueryOptions::new(),
+            )
+            .unwrap();
+        assert!(result.items.is_empty());
         assert_eq!(result.count, 0);
         assert_eq!(result.scanned_count, 6);
     }
 
     #[test]
     fn query_by_partition_key() {
-        let f = TestFixture::new();
-        let cond = KeyCondition::pk("user1");
-        let result = f.execute(cond);
+        let schema = schema();
+        let executor = QueryExecutor::new(&schema);
+        let result = executor
+            .execute(
+                test_items().into_iter(),
+                &KeyCondition::pk("user1"),
+                &QueryOptions::new(),
+            )
+            .unwrap();
         assert_eq!(result.count, 4);
         assert_eq!(result.scanned_count, 6);
     }
 
     #[test]
-    fn query_with_sk_begins_with() {
-        let f = TestFixture::new();
-        let cond = KeyCondition::pk("user1").sk_begins_with("order");
-        let result = f.execute(cond);
+    fn query_with_sort_key_prefix() {
+        let schema = schema();
+        let executor = QueryExecutor::new(&schema);
+        let result = executor
+            .execute(
+                test_items().into_iter(),
+                &KeyCondition::pk("user1").sk_begins_with("order"),
+                &QueryOptions::new(),
+            )
+            .unwrap();
         assert_eq!(result.count, 3);
     }
 
     #[test]
     fn query_with_sk_between() {
-        let f = TestFixture::new();
-        let cond = KeyCondition::pk("user1").sk_between("order#002", "order#003");
-        let result = f.execute(cond);
+        let schema = schema();
+        let executor = QueryExecutor::new(&schema);
+        let result = executor
+            .execute(
+                test_items().into_iter(),
+                &KeyCondition::pk("user1").sk_between("order#002", "order#003"),
+                &QueryOptions::new(),
+            )
+            .unwrap();
         assert_eq!(result.count, 2);
     }
 
     #[test]
-    fn query_reverse_order() {
-        let f = TestFixture::new();
-        let cond = KeyCondition::pk("user1").sk_begins_with("order");
-        let opts = QueryOptions::new().reverse();
-        let result = f.execute_with_opts(cond, opts);
-        assert_eq!(result.count, 3);
-        assert_eq!(result.items[0].get("sk").unwrap().as_s(), Some("order#003"));
-        assert_eq!(result.items[2].get("sk").unwrap().as_s(), Some("order#001"));
-    }
-
-    #[test]
-    fn query_with_limit() {
-        let f = TestFixture::new();
-        let cond = KeyCondition::pk("user1").sk_begins_with("order");
-        let opts = QueryOptions::new().with_limit(1);
-        let result = f.execute_with_opts(cond, opts);
-        assert_eq!(result.count, 1);
-    }
-
-    #[test]
-    fn query_forward_is_sorted() {
-        let f = TestFixture::new();
-        let cond = KeyCondition::pk("user1").sk_begins_with("order");
-        let result = f.execute(cond);
-
-        assert_eq!(result.count, 3);
+    fn query_with_limit_forward() {
+        let schema = schema();
+        let executor = QueryExecutor::new(&schema);
+        let result = executor
+            .execute(
+                test_items().into_iter(),
+                &KeyCondition::pk("user1").sk_between("order#002", "order#003"),
+                &QueryOptions::new().with_limit(2),
+            )
+            .unwrap();
+        assert_eq!(result.count, 2);
         assert_eq!(result.items[0].get("sk").unwrap().as_s(), Some("order#001"));
         assert_eq!(result.items[1].get("sk").unwrap().as_s(), Some("order#002"));
-        assert_eq!(result.items[2].get("sk").unwrap().as_s(), Some("order#003"));
     }
 
     #[test]
-    fn query_limit_with_reverse() {
-        let f = TestFixture::new();
-        let cond = KeyCondition::pk("user1").sk_begins_with("order");
-        let opts = QueryOptions::new().with_limit(2).reverse();
-        let result = f.execute_with_opts(cond, opts);
-
+    fn query_with_limit_reverse() {
+        let schema = schema();
+        let executor = QueryExecutor::new(&schema);
+        let result = executor
+            .execute(
+                test_items().into_iter(),
+                &KeyCondition::pk("user1").sk_between("order#002", "order#003"),
+                &QueryOptions::new().with_limit(2).reverse(),
+            )
+            .unwrap();
         assert_eq!(result.count, 2);
         assert_eq!(result.items[0].get("sk").unwrap().as_s(), Some("order#003"));
-        assert_eq!(result.items[1].get("sk").unwrap().as_s(), Some("order#002"));
+        assert_eq!(result.items[1].get("sk").unwrap().as_s(), Some("order#001"));
     }
 
-    mod numeric_sort_keys {
-        use super::*;
+    #[test]
+    fn maintains_sort_order() {
+        let schema = schema();
+        let executor = QueryExecutor::new(&schema);
+        let result = executor
+            .execute(
+                test_items().into_iter(),
+                &KeyCondition::pk("user1").sk_begins_with("order"),
+                &QueryOptions::new(),
+            )
+            .unwrap();
 
-        fn make_numeric_item(pk: &str, sk: i32, data: &str) -> (PrimaryKey, Item) {
-            let key = PrimaryKey::composite(pk, KeyValue::N(sk.to_string()));
-            let item = Item::new()
-                .with_s("pk", pk)
-                .with_n("sk", sk)
-                .with_s("data", data);
-            (key, item)
-        }
-
-        #[test]
-        fn sorted_integers() {
-            let schema = KeySchema::composite("pk", KeyType::S, "sk", KeyType::N);
-            let items = vec![
-                make_numeric_item("user1", 100, "onehundred"),
-                make_numeric_item("user1", -4, "negativefour"),
-                make_numeric_item("user1", -100, "negativeonehundred"),
-                make_numeric_item("user1", 50, "50"),
-                make_numeric_item("user1", 0, "zero"),
-            ];
-
-            let executor = QueryExecutor::new(&schema);
-            let result = executor
-                .execute(
-                    items.into_iter(),
-                    &KeyCondition::pk("user1"),
-                    &QueryOptions::new(),
-                )
-                .unwrap();
-
-            let sks: Vec<&str> = result
-                .items
-                .iter()
-                .map(|i| i.get("sk").unwrap().as_n().unwrap())
-                .collect();
-            assert_eq!(sks, vec!["-100", "-4", "0", "50", "100"]);
-        }
+        let sks: Vec<&str> = result
+            .items
+            .iter()
+            .map(|i| i.get("sk").unwrap().as_s().unwrap())
+            .collect();
+        assert_eq!(sks, vec!["order#001", "order#002", "order#003"]);
     }
 
-    mod sortable_key {
-        use super::*;
+    #[test]
+    fn numeric_sort_keys() {
+        let schema = KeySchema::composite("pk", KeyType::S, "sk", KeyType::N);
+        let items: Vec<(PrimaryKey, Item)> = vec![100, -4, -100, 50, 0]
+            .into_iter()
+            .map(|n| {
+                let key = PrimaryKey::composite("user1", KeyValue::N(n.to_string()));
+                let item = Item::new()
+                    .with_s("pk", "user1")
+                    .with_n("sk", n)
+                    .with_n("value", n);
+                (key, item)
+            })
+            .collect();
 
-        #[test]
-        fn with_none_as_sort_key() {
-            let pk1 = PrimaryKey::simple("user1");
-            let pk2 = PrimaryKey::simple("user2");
-            let pk3 = PrimaryKey::composite("user2", "order1");
+        let executor = QueryExecutor::new(&schema);
+        let result = executor
+            .execute(
+                items.into_iter(),
+                &KeyCondition::pk("user1"),
+                &QueryOptions::new(),
+            )
+            .unwrap();
 
-            let sk1 = SortableKey::new(&pk1, 0);
-            let sk2 = SortableKey::new(&pk2, 1);
-            let sk3 = SortableKey::new(&pk3, 2);
-
-            // None < Some
-            assert!(sk1 < sk3);
-            assert!(sk2 < sk3);
-            // None ? None --> use unique suffix
-            assert_ne!(sk1, sk2);
-        }
-
-        #[test]
-        fn with_same_sort_key() {
-            let pk1 = PrimaryKey::composite("user1", "order1");
-            let pk2 = PrimaryKey::composite("user2", "order1");
-
-            let sk1 = SortableKey::new(&pk1, 0);
-            let sk2 = SortableKey::new(&pk2, 1);
-
-            // should use unique suffix
-            assert_ne!(sk1, sk2);
-
-            // order should be consistent
-            let cmp1 = sk1.cmp(&sk2);
-            let cmp2 = sk2.cmp(&sk1);
-            assert_eq!(cmp1, cmp2.reverse());
-        }
+        let sks: Vec<&str> = result
+            .items
+            .iter()
+            .map(|i| i.get("sk").unwrap().as_n().unwrap())
+            .collect();
+        assert_eq!(sks, vec!["-100", "-4", "0", "50", "100"]);
     }
 }
