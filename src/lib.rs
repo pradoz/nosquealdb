@@ -31,6 +31,9 @@ pub use types::{
     KeyValue, PrimaryKey, ReturnValue, WriteResult, encode_key_component,
 };
 pub use update::{UpdateAction, UpdateExecutor, UpdateExpression};
-pub use utils::{compare_key_values, compare_numeric_strings, escape_key_chars, numbers_equal};
+pub use utils::{
+    add_numeric_strings, compare_key_values, compare_numeric_strings, escape_key_chars,
+    numbers_equal,
+};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

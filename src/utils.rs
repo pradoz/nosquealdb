@@ -1,3 +1,4 @@
+use crate::TableError;
 use crate::error::EvalError;
 use crate::types::{AttributeValue, KeyValue};
 use std::borrow::Cow;
@@ -126,6 +127,22 @@ pub fn numbers_equal(a: &str, b: &str) -> bool {
     compare_numeric_strings(a, b) == Ordering::Equal
 }
 
+pub fn add_numeric_strings(a: &str, b: &str) -> Result<String, TableError> {
+    // try integer arithmetic first for exact precision
+    if let (Ok(x), Ok(y)) = (a.parse::<i64>(), b.parse::<i64>()) {
+        return Ok((x + y).to_string());
+    }
+
+    // fall back to float arithmetic
+    let x: f64 = a
+        .parse()
+        .map_err(|_| TableError::update_error("invalid number"))?;
+    let y: f64 = b
+        .parse()
+        .map_err(|_| TableError::update_error("invalid number"))?;
+    Ok((x + y).to_string())
+}
+
 const ESCAPE_CHARS: [char; 3] = ['#', ':', '\\'];
 
 /// Escape special characters in storage keys.
@@ -154,40 +171,68 @@ pub fn escape_key_chars(s: &str) -> Cow<'_, str> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn base64_roundtrip() {
-        let cases: &[&[u8]] = &[
-            b"",
-            b"f",
-            b"fo",
-            b"foo",
-            b"foob",
-            b"fooba",
-            b"foobar",
-            &[0, 1, 2, 3, 255, 254, 253],
-        ];
+    mod base64 {
+        use super::*;
 
-        for case in cases {
-            let encoded = base64_encode(case);
-            let decoded = base64_decode(&encoded).unwrap();
-            assert_eq!(*case, decoded.as_slice(), "roundtrip failed for {:?}", case);
+        #[test]
+        fn base64_roundtrip() {
+            let cases: &[&[u8]] = &[
+                b"",
+                b"f",
+                b"fo",
+                b"foo",
+                b"foob",
+                b"fooba",
+                b"foobar",
+                &[0, 1, 2, 3, 255, 254, 253],
+            ];
+
+            for case in cases {
+                let encoded = base64_encode(case);
+                let decoded = base64_decode(&encoded).unwrap();
+                assert_eq!(*case, decoded.as_slice(), "roundtrip failed for {:?}", case);
+            }
+        }
+
+        #[test]
+        fn base64_known_values() {
+            assert_eq!(base64_encode(b""), "");
+            assert_eq!(base64_encode(b"f"), "Zg==");
+            assert_eq!(base64_encode(b"fo"), "Zm8=");
+            assert_eq!(base64_encode(b"foo"), "Zm9v");
+            assert_eq!(base64_encode(b"foob"), "Zm9vYg==");
+            assert_eq!(base64_encode(b"fooba"), "Zm9vYmE=");
+            assert_eq!(base64_encode(b"foobar"), "Zm9vYmFy");
+        }
+
+        #[test]
+        fn base64_decode_invalid() {
+            assert!(base64_decode("!!!").is_none());
+            assert!(base64_decode("abc!").is_none());
         }
     }
 
-    #[test]
-    fn base64_known_values() {
-        assert_eq!(base64_encode(b""), "");
-        assert_eq!(base64_encode(b"f"), "Zg==");
-        assert_eq!(base64_encode(b"fo"), "Zm8=");
-        assert_eq!(base64_encode(b"foo"), "Zm9v");
-        assert_eq!(base64_encode(b"foob"), "Zm9vYg==");
-        assert_eq!(base64_encode(b"fooba"), "Zm9vYmE=");
-        assert_eq!(base64_encode(b"foobar"), "Zm9vYmFy");
-    }
+    mod add_numeric {
+        use super::*;
 
-    #[test]
-    fn base64_decode_invalid() {
-        assert!(base64_decode("!!!").is_none());
-        assert!(base64_decode("abc!").is_none());
+        #[test]
+        fn integers() {
+            assert_eq!(add_numeric_strings("10", "5").unwrap(), "15");
+            assert_eq!(add_numeric_strings("10", "-5").unwrap(), "5");
+            assert_eq!(add_numeric_strings("-10", "-5").unwrap(), "-15");
+        }
+
+        #[test]
+        fn float() {
+            assert_eq!(add_numeric_strings("10", "0.5").unwrap(), "10.5");
+            assert_eq!(add_numeric_strings("10.5", "-5.5").unwrap(), "5");
+            assert_eq!(add_numeric_strings("-10.2", "-5.3").unwrap(), "-15.5");
+        }
+
+        #[test]
+        fn invalid_fails() {
+            assert!(add_numeric_strings("apple", "0.5").is_err());
+            assert!(add_numeric_strings("10.5", "banana").is_err());
+        }
     }
 }

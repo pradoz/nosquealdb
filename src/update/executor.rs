@@ -4,6 +4,7 @@ use crate::KeyValidationError;
 use crate::condition::{AttributePath, PathSegment};
 use crate::error::{TableError, TableResult};
 use crate::types::{AttributeValue, Item};
+use crate::utils::add_numeric_strings;
 
 use super::expression::{UpdateAction, UpdateExpression};
 
@@ -237,7 +238,7 @@ impl UpdateExecutor {
         let new_value = match (current, value) {
             // ADD - increment number
             (Some(AttributeValue::N(n)), AttributeValue::N(delta)) => {
-                let result = add_numbers(&n, &delta)?;
+                let result = add_numeric_strings(&n, &delta)?;
                 AttributeValue::N(result)
             }
             (None, AttributeValue::N(_)) => value.clone(),
@@ -314,21 +315,6 @@ impl Default for UpdateExecutor {
     fn default() -> Self {
         Self::new()
     }
-}
-
-fn add_numbers(a: &str, b: &str) -> TableResult<String> {
-    if let (Ok(x), Ok(y)) = (a.parse::<i64>(), b.parse::<i64>()) {
-        return Ok((x + y).to_string());
-    }
-
-    // fall back to float
-    let x: f64 = a
-        .parse()
-        .map_err(|_| TableError::update_error("invalid number"))?;
-    let y: f64 = b
-        .parse()
-        .map_err(|_| TableError::update_error("invalid number"))?;
-    Ok((x + y).to_string())
 }
 
 #[cfg(test)]
