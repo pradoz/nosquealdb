@@ -5,7 +5,6 @@ use crate::types::{Item, KeySchema, KeyValue, PrimaryKey};
 use super::projection::Projection;
 use super::storage::IndexStorage;
 
-
 #[derive(Debug)]
 pub struct GlobalSecondaryIndex {
     name: String,

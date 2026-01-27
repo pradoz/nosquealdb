@@ -10,7 +10,10 @@ pub struct IndexStorage<V> {
 
 impl<V> IndexStorage<V> {
     pub fn new() -> Self {
-        Self { data: HashMap::new(), reverse_index: HashMap::new() }
+        Self {
+            data: HashMap::new(),
+            reverse_index: HashMap::new(),
+        }
     }
 
     pub fn put(&mut self, table_key: String, index_key: String, value: V) -> Option<V> {

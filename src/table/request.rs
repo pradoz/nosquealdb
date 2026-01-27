@@ -3,6 +3,44 @@ use crate::query::{KeyCondition, QueryOptions};
 use crate::types::{Item, PrimaryKey, ReturnValue};
 use crate::update::UpdateExpression;
 
+macro_rules! impl_condition_builder {
+    ($type:ty) => {
+        impl $type {
+            pub fn condition(mut self, condition: Condition) -> Self {
+                self.condition = Some(condition);
+                self
+            }
+            pub fn condition_if(mut self, condition: Option<Condition>) -> Self {
+                self.condition = condition;
+                self
+            }
+        }
+    };
+}
+
+macro_rules! impl_return_value_builder {
+    ($type:ty) => {
+        impl $type {
+            pub fn return_none(mut self) -> Self {
+                self.return_value = ReturnValue::None;
+                self
+            }
+            pub fn return_old(mut self) -> Self {
+                self.return_value = ReturnValue::AllOld;
+                self
+            }
+            pub fn return_new(mut self) -> Self {
+                self.return_value = ReturnValue::AllNew;
+                self
+            }
+            pub fn return_value(mut self, rv: ReturnValue) -> Self {
+                self.return_value = rv;
+                self
+            }
+        }
+    };
+}
+
 #[derive(Debug, Clone)]
 pub struct PutRequest {
     pub(crate) item: Item,
@@ -21,36 +59,14 @@ impl PutRequest {
         }
     }
 
-    pub fn condition(mut self, condition: Condition) -> Self {
-        self.condition = Some(condition);
-        self
-    }
-
-    pub fn condition_if(mut self, condition: Option<Condition>) -> Self {
-        self.condition = condition;
-        self
-    }
-
     pub fn if_not_exists(mut self) -> Self {
         self.if_not_exists = true;
         self
     }
-
-    pub fn return_old(mut self) -> Self {
-        self.return_value = ReturnValue::AllOld;
-        self
-    }
-
-    pub fn return_new(mut self) -> Self {
-        self.return_value = ReturnValue::AllNew;
-        self
-    }
-
-    pub fn return_value(mut self, rv: ReturnValue) -> Self {
-        self.return_value = rv;
-        self
-    }
 }
+
+impl_condition_builder!(PutRequest);
+impl_return_value_builder!(PutRequest);
 
 impl From<Item> for PutRequest {
     fn from(item: Item) -> Self {
@@ -75,37 +91,10 @@ impl UpdateRequest {
             return_value: ReturnValue::AllNew,
         }
     }
-
-    pub fn condition(mut self, condition: Condition) -> Self {
-        self.condition = Some(condition);
-        self
-    }
-
-    pub fn condition_if(mut self, condition: Option<Condition>) -> Self {
-        self.condition = condition;
-        self
-    }
-
-    pub fn return_none(mut self) -> Self {
-        self.return_value = ReturnValue::None;
-        self
-    }
-
-    pub fn return_old(mut self) -> Self {
-        self.return_value = ReturnValue::AllOld;
-        self
-    }
-
-    pub fn return_new(mut self) -> Self {
-        self.return_value = ReturnValue::AllNew;
-        self
-    }
-
-    pub fn return_value(mut self, rv: ReturnValue) -> Self {
-        self.return_value = rv;
-        self
-    }
 }
+
+impl_condition_builder!(UpdateRequest);
+impl_return_value_builder!(UpdateRequest);
 
 #[derive(Debug, Clone)]
 pub struct DeleteRequest {
@@ -122,32 +111,10 @@ impl DeleteRequest {
             return_value: ReturnValue::None,
         }
     }
-
-    pub fn condition(mut self, condition: Condition) -> Self {
-        self.condition = Some(condition);
-        self
-    }
-
-    pub fn condition_if(mut self, condition: Option<Condition>) -> Self {
-        self.condition = condition;
-        self
-    }
-
-    pub fn return_old(mut self) -> Self {
-        self.return_value = ReturnValue::AllOld;
-        self
-    }
-
-    pub fn return_new(mut self) -> Self {
-        self.return_value = ReturnValue::AllNew;
-        self
-    }
-
-    pub fn return_value(mut self, rv: ReturnValue) -> Self {
-        self.return_value = rv;
-        self
-    }
 }
+
+impl_condition_builder!(DeleteRequest);
+impl_return_value_builder!(DeleteRequest);
 
 impl From<PrimaryKey> for DeleteRequest {
     fn from(key: PrimaryKey) -> Self {

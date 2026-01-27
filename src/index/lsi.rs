@@ -69,7 +69,9 @@ impl LocalSecondaryIndex {
         let lsi_sk = match self.extract_lsi_sort_key(item) {
             Some(sk) => sk,
             None => {
-                return self.storage.remove_by_table_key(&table_key.to_storage_key());
+                return self
+                    .storage
+                    .remove_by_table_key(&table_key.to_storage_key());
             }
         };
 
@@ -83,7 +85,8 @@ impl LocalSecondaryIndex {
     }
 
     pub fn delete(&mut self, table_key: &PrimaryKey) -> Option<Item> {
-        self.storage.remove_by_table_key(&table_key.to_storage_key())
+        self.storage
+            .remove_by_table_key(&table_key.to_storage_key())
     }
 
     pub fn query(&self, condition: KeyCondition) -> TableResult<QueryResult> {
