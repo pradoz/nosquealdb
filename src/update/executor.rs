@@ -60,11 +60,11 @@ impl UpdateExecutor {
             ));
         }
 
-        if segments.len() == 1 {
-            if let PathSegment::Key(key) = &segments[0] {
-                item.set(key.clone(), value);
-                return Ok(());
-            }
+        if segments.len() == 1
+            && let PathSegment::Key(key) = &segments[0]
+        {
+            item.set(key.clone(), value);
+            return Ok(());
         }
 
         // navigate and set
@@ -97,14 +97,13 @@ impl UpdateExecutor {
             .unwrap_or(AttributeValue::M(BTreeMap::new()));
 
         // navigate to parent of target and set value
-        current = self.set_at_path(current, &segments[1..], value)?;
+        current = Self::set_at_path(current, &segments[1..], value)?;
 
         item.set(root, current);
         Ok(())
     }
 
     fn set_at_path(
-        &self,
         mut current: AttributeValue,
         segments: &[PathSegment],
         value: AttributeValue,
@@ -121,7 +120,7 @@ impl UpdateExecutor {
                     let child = map
                         .remove(key)
                         .unwrap_or(AttributeValue::M(BTreeMap::new()));
-                    let updated = self.set_at_path(child, &segments[1..], value)?;
+                    let updated = Self::set_at_path(child, &segments[1..], value)?;
                     map.insert(key.clone(), updated);
                 }
             }
@@ -139,7 +138,7 @@ impl UpdateExecutor {
                         return Err(TableError::update_error("list index out of bounds"));
                     }
                     let child = std::mem::replace(&mut list[*idx], AttributeValue::Null);
-                    list[*idx] = self.set_at_path(child, &segments[1..], value)?;
+                    list[*idx] = Self::set_at_path(child, &segments[1..], value)?;
                 }
             }
             (_, PathSegment::Key(key)) => {
@@ -148,7 +147,7 @@ impl UpdateExecutor {
                     map.insert(key.clone(), value);
                 } else {
                     let child = AttributeValue::M(BTreeMap::new());
-                    let updated = self.set_at_path(child, &segments[1..], value)?;
+                    let updated = Self::set_at_path(child, &segments[1..], value)?;
                     map.insert(key.clone(), updated);
                 }
                 current = AttributeValue::M(map);
@@ -167,11 +166,11 @@ impl UpdateExecutor {
             return Ok(());
         }
 
-        if segments.len() == 1 {
-            if let PathSegment::Key(k) = &segments[0] {
-                item.remove(k);
-                return Ok(());
-            }
+        if segments.len() == 1
+            && let PathSegment::Key(k) = &segments[0]
+        {
+            item.remove(k);
+            return Ok(());
         }
 
         // nested removal
@@ -181,7 +180,7 @@ impl UpdateExecutor {
         };
 
         if let Some(current) = item.remove(&root) {
-            if let Some(updated) = self.remove_at_path(current, &segments[1..])? {
+            if let Some(updated) = Self::remove_at_path(current, &segments[1..])? {
                 item.set(root, updated);
             } else {
                 // TODO: put it back if removal doesn't happen?
@@ -191,7 +190,6 @@ impl UpdateExecutor {
     }
 
     fn remove_at_path(
-        &self,
         mut current: AttributeValue,
         segments: &[PathSegment],
     ) -> TableResult<Option<AttributeValue>> {
@@ -203,10 +201,10 @@ impl UpdateExecutor {
             (AttributeValue::M(map), PathSegment::Key(k)) => {
                 if segments.len() == 1 {
                     map.remove(k);
-                } else if let Some(child) = map.remove(k) {
-                    if let Some(updated) = self.remove_at_path(child, &segments[1..])? {
-                        map.insert(k.clone(), updated);
-                    }
+                } else if let Some(child) = map.remove(k)
+                    && let Some(updated) = Self::remove_at_path(child, &segments[1..])?
+                {
+                    map.insert(k.clone(), updated);
                 }
             }
             (AttributeValue::L(list), PathSegment::Index(idx)) => {
@@ -215,7 +213,7 @@ impl UpdateExecutor {
                         list.remove(*idx);
                     } else {
                         let child = std::mem::replace(&mut list[*idx], AttributeValue::Null);
-                        if let Some(updated) = self.remove_at_path(child, &segments[1..])? {
+                        if let Some(updated) = Self::remove_at_path(child, &segments[1..])? {
                             list[*idx] = updated;
                         }
                     }
@@ -238,7 +236,7 @@ impl UpdateExecutor {
         let new_value = match (current, value) {
             // ADD - increment number
             (Some(AttributeValue::N(n)), AttributeValue::N(delta)) => {
-                let result = add_numeric_strings(&n, &delta)?;
+                let result = add_numeric_strings(&n, delta)?;
                 AttributeValue::N(result)
             }
             (None, AttributeValue::N(_)) => value.clone(),

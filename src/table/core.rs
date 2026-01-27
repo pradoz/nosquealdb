@@ -207,10 +207,10 @@ impl Table {
                 break;
             }
 
-            if let Some(ref filter) = request.filter {
-                if !evaluate(filter, &item).unwrap_or(false) {
-                    continue;
-                }
+            if let Some(ref filter) = request.filter
+                && !evaluate(filter, &item).unwrap_or(false)
+            {
+                continue;
             }
 
             items.push(item);
@@ -343,7 +343,7 @@ impl Table {
         condition: Option<Condition>,
         return_value: ReturnValue,
     ) -> TableResult<WriteResult> {
-        let _ = item.validate_key(&self.schema)?;
+        item.validate_key(&self.schema)?;
 
         let pk = item.extract_key(&self.schema).ok_or_else(|| {
             TableError::InvalidKey(KeyValidationError::MissingAttribute {
@@ -383,7 +383,7 @@ impl Table {
         item: Item,
         return_value: ReturnValue,
     ) -> TableResult<WriteResult> {
-        let _ = item.validate_key(&self.schema())?;
+        item.validate_key(&self.schema)?;
 
         let pk = item.extract_key(&self.schema).ok_or_else(|| {
             TableError::InvalidKey(crate::types::KeyValidationError::MissingAttribute {
@@ -461,10 +461,10 @@ impl Table {
             .get_item_by_storage_key(&storage_key)?
             .ok_or(TableError::ItemNotFound)?;
 
-        if let Some(cond) = condition {
-            if !evaluate(&cond, &old_item)? {
-                return Err(TableError::ConditionFailed);
-            }
+        if let Some(cond) = condition
+            && !evaluate(&cond, &old_item)?
+        {
+            return Err(TableError::ConditionFailed);
         }
 
         let executor = UpdateExecutor::new();

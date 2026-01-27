@@ -149,7 +149,7 @@ impl GsiBuilder {
     pub fn new(name: impl Into<String>, schema: KeySchema) -> Self {
         Self {
             name: name.into(),
-            schema: schema,
+            schema,
             projection: Projection::All,
         }
     }

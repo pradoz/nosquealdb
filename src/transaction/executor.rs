@@ -190,3 +190,9 @@ impl TransactionExecutor {
         Ok(TransactGetResult::new(results))
     }
 }
+
+impl Default for TransactionExecutor {
+    fn default() -> Self {
+        Self::new()
+    }
+}

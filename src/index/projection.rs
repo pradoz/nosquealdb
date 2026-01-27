@@ -1,8 +1,9 @@
 use crate::types::{Item, KeySchema};
 use std::collections::HashSet;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub enum Projection {
+    #[default]
     All,
     KeysOnly,
     Include(HashSet<String>),
@@ -66,11 +67,6 @@ impl Projection {
     }
 }
 
-impl Default for Projection {
-    fn default() -> Self {
-        Self::All
-    }
-}
 #[cfg(test)]
 mod tests {
     use super::*;

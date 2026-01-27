@@ -151,7 +151,7 @@ impl<'a> QueryExecutor<'a> {
         Ok(QueryResult {
             items,
             scanned_count: scanned,
-            count: count,
+            count,
         })
     }
 

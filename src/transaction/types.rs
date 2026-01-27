@@ -72,7 +72,7 @@ impl TransactWriteItem {
     pub fn condition_check(key: impl Into<PrimaryKey>, condition: Condition) -> Self {
         Self::ConditionCheck {
             key: key.into(),
-            condition: condition,
+            condition,
         }
     }
 }

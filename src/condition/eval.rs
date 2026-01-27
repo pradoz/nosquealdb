@@ -138,19 +138,19 @@ fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
 }
 
 fn matches_type(attr: &AttributeValue, expected: AttrType) -> bool {
-    match (attr, expected) {
-        (AttributeValue::S(_), AttrType::String) => true,
-        (AttributeValue::N(_), AttrType::Number) => true,
-        (AttributeValue::B(_), AttrType::Binary) => true,
-        (AttributeValue::Bool(_), AttrType::Boolean) => true,
-        (AttributeValue::Null, AttrType::Null) => true,
-        (AttributeValue::M(_), AttrType::Map) => true,
-        (AttributeValue::L(_), AttrType::List) => true,
-        (AttributeValue::Ss(_), AttrType::StringSet) => true,
-        (AttributeValue::Ns(_), AttrType::NumberSet) => true,
-        (AttributeValue::Bs(_), AttrType::BinarySet) => true,
-        _ => false,
-    }
+    matches!(
+        (attr, expected),
+        (AttributeValue::S(_), AttrType::String)
+            | (AttributeValue::N(_), AttrType::Number)
+            | (AttributeValue::B(_), AttrType::Binary)
+            | (AttributeValue::Bool(_), AttrType::Boolean)
+            | (AttributeValue::Null, AttrType::Null)
+            | (AttributeValue::M(_), AttrType::Map)
+            | (AttributeValue::L(_), AttrType::List)
+            | (AttributeValue::Ss(_), AttrType::StringSet)
+            | (AttributeValue::Ns(_), AttrType::NumberSet)
+            | (AttributeValue::Bs(_), AttrType::BinarySet)
+    )
 }
 
 fn get_size(attr: &AttributeValue) -> usize {
