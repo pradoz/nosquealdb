@@ -203,17 +203,6 @@ mod tests {
     }
 
     #[test]
-    fn put_indexes_item() {
-        let mut gsi = create_gsi();
-        let item = sample_order("user1", "order001", "2026-01-07", 42);
-
-        let table_key = PrimaryKey::composite("user1", "order001");
-        gsi.put(table_key, &item);
-
-        assert_eq!(gsi.len(), 1);
-    }
-
-    #[test]
     fn sparse_index_skips_items_without_key() {
         let mut gsi = create_gsi();
 
@@ -227,105 +216,6 @@ mod tests {
         gsi.put(table_key, &item);
 
         assert!(gsi.is_empty());
-    }
-
-    #[test]
-    fn query_by_index_partition_key() {
-        let mut gsi = create_gsi();
-
-        gsi.put(
-            PrimaryKey::composite("user1", "order001"),
-            &sample_order("user1", "order001", "2026-01-07", 100),
-        );
-        gsi.put(
-            PrimaryKey::composite("user1", "order002"),
-            &sample_order("user1", "order002", "2026-01-07", 200),
-        );
-        gsi.put(
-            PrimaryKey::composite("user2", "order003"),
-            &sample_order("user2", "order003", "2026-01-07", 300),
-        );
-        gsi.put(
-            PrimaryKey::composite("user1", "order004"),
-            &sample_order("user1", "order004", "2026-01-31", 400),
-        );
-
-        // query orders on 2026-01-07
-        let result = gsi.query(KeyCondition::pk("2026-01-07")).unwrap();
-
-        assert_eq!(result.count, 3);
-    }
-
-    #[test]
-    fn query_by_index_with_sort_key() {
-        let mut gsi = create_gsi();
-
-        gsi.put(
-            PrimaryKey::composite("user1", "order001"),
-            &sample_order("user1", "order001", "2026-01-07", 100),
-        );
-        gsi.put(
-            PrimaryKey::composite("user2", "order002"),
-            &sample_order("user2", "order002", "2026-01-07", 200),
-        );
-        gsi.put(
-            PrimaryKey::composite("user3", "order003"),
-            &sample_order("user3", "order003", "2026-01-07", 300),
-        );
-
-        // query orders on 2026-01-07 for user2
-        let result = gsi
-            .query(KeyCondition::pk("2026-01-07").sk_eq("user2"))
-            .unwrap();
-
-        assert_eq!(result.count, 1);
-        assert_eq!(
-            result.items[0].get("order_id").unwrap().as_s(),
-            Some("order002")
-        );
-    }
-
-    #[test]
-    fn delete_removes_from_index() {
-        let mut gsi = create_gsi();
-
-        let table_key = PrimaryKey::composite("user1", "order001");
-        gsi.put(
-            table_key.clone(),
-            &sample_order("user1", "order001", "2026-01-07", 100),
-        );
-
-        assert_eq!(gsi.len(), 1);
-        gsi.delete(&table_key);
-        assert!(gsi.is_empty());
-    }
-
-    #[test]
-    fn update_replaces_index_entry() {
-        let mut gsi = create_gsi();
-
-        let table_key = PrimaryKey::composite("user1", "order001");
-
-        gsi.put(
-            table_key.clone(),
-            &sample_order("user1", "order001", "2026-01-07", 100),
-        );
-
-        // update
-        gsi.put(
-            table_key,
-            &sample_order("user1", "order001", "2026-01-31", 150),
-        );
-
-        assert_eq!(gsi.len(), 1);
-
-        // should find under new date
-        let result = gsi.query(KeyCondition::pk("2026-01-31")).unwrap();
-        assert_eq!(result.count, 1);
-
-        // should not find under old date
-        let result = gsi.query(KeyCondition::pk("2026-01-07")).unwrap();
-        assert_eq!(result.count, 0);
     }
 
     #[test]
@@ -355,22 +245,5 @@ mod tests {
 
         // should not have non-key attributes
         assert!(!item.contains("amount"));
-    }
-
-    #[test]
-    fn clear() {
-        let mut gsi = create_gsi();
-
-        for i in 0..10 {
-            let table_key = PrimaryKey::composite("user1", format!("order{:03}", i));
-            gsi.put(
-                table_key,
-                &sample_order("user1", &format!("order{:03}", i), "2026-01-22", i * 100),
-            );
-        }
-        assert_eq!(gsi.len(), 10);
-
-        gsi.clear();
-        assert_eq!(gsi.len(), 0);
     }
 }

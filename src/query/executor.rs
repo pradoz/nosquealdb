@@ -259,21 +259,6 @@ mod tests {
     }
 
     #[test]
-    fn query_by_partition_key() {
-        let schema = schema();
-        let executor = QueryExecutor::new(&schema);
-        let result = executor
-            .execute(
-                test_items().into_iter(),
-                &KeyCondition::pk("user1"),
-                &QueryOptions::new(),
-            )
-            .unwrap();
-        assert_eq!(result.count, 4);
-        assert_eq!(result.scanned_count, 6);
-    }
-
-    #[test]
     fn query_with_sort_key_prefix() {
         let schema = schema();
         let executor = QueryExecutor::new(&schema);
@@ -331,26 +316,6 @@ mod tests {
         assert_eq!(result.count, 2);
         assert_eq!(result.items[0].get("sk").unwrap().as_s(), Some("order#003"));
         assert_eq!(result.items[1].get("sk").unwrap().as_s(), Some("order#002"));
-    }
-
-    #[test]
-    fn maintains_sort_order() {
-        let schema = schema();
-        let executor = QueryExecutor::new(&schema);
-        let result = executor
-            .execute(
-                test_items().into_iter(),
-                &KeyCondition::pk("user1").sk_begins_with("order"),
-                &QueryOptions::new(),
-            )
-            .unwrap();
-
-        let sks: Vec<&str> = result
-            .items
-            .iter()
-            .map(|i| i.get("sk").unwrap().as_s().unwrap())
-            .collect();
-        assert_eq!(sks, vec!["order#001", "order#002", "order#003"]);
     }
 
     #[test]

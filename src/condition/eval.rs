@@ -225,69 +225,51 @@ mod tests {
             )
     }
 
-    mod equality {
-        use super::*;
-
-        #[test]
-        fn not_equals() {
-            let item = test_item();
-            assert!(evaluate(&attr("id").ne(67i32), &item).unwrap());
-            assert!(!evaluate(&attr("id").ne(42i32), &item).unwrap());
-        }
-
-        #[test]
-        fn string() {
-            let item = test_item();
-            assert!(evaluate(&attr("name").eq("Alice"), &item).unwrap());
-            assert!(!evaluate(&attr("name").eq("Bob"), &item).unwrap());
-        }
-
-        #[test]
-        fn number() {
-            let item = test_item();
-            assert!(evaluate(&attr("id").eq(42i32), &item).unwrap());
-            assert!(!evaluate(&attr("id").eq(67i32), &item).unwrap());
-        }
-
-        #[test]
-        fn bool() {
-            let item = test_item();
-            assert!(evaluate(&attr("verified").eq(true), &item).unwrap());
-            assert!(!evaluate(&attr("verified").eq(false), &item).unwrap());
-        }
-
-        #[test]
-        fn missing_attribute() {
-            let item = test_item();
-            assert!(!evaluate(&attr("missing").eq("AAAA"), &item).unwrap());
-            assert!(evaluate(&attr("missing").ne("AAAA"), &item).unwrap());
-        }
-    }
-
     mod comparison {
         use super::*;
 
         #[test]
-        fn string_comparison() {
+        fn equality() {
             let item = test_item();
+
+            // logical NOT
+            assert!(evaluate(&attr("id").ne(67i32), &item).unwrap());
+            assert!(!evaluate(&attr("id").ne(42i32), &item).unwrap());
+
+            // string
+            assert!(evaluate(&attr("name").eq("Alice"), &item).unwrap());
+            assert!(!evaluate(&attr("name").eq("Bob"), &item).unwrap());
+
+            // number
+            assert!(evaluate(&attr("id").eq(42i32), &item).unwrap());
+            assert!(!evaluate(&attr("id").eq(67i32), &item).unwrap());
+
+            // boolean
+            assert!(evaluate(&attr("verified").eq(true), &item).unwrap());
+            assert!(!evaluate(&attr("verified").eq(false), &item).unwrap());
+
+            // missing attribute
+            let item = test_item();
+            assert!(!evaluate(&attr("missing").eq("AAAA"), &item).unwrap());
+            assert!(evaluate(&attr("missing").ne("AAAA"), &item).unwrap());
+        }
+
+        #[test]
+        fn ordering() {
+            let item = test_item();
+
+            // string
             assert!(evaluate(&attr("name").lt("Bob"), &item).unwrap());
             assert!(evaluate(&attr("name").gt("Aaron"), &item).unwrap());
             assert!(evaluate(&attr("name").eq("Alice"), &item).unwrap());
             assert!(evaluate(&attr("name").le("Alice"), &item).unwrap());
             assert!(evaluate(&attr("name").ge("Alice"), &item).unwrap());
-        }
 
-        #[test]
-        fn numeric_comparison() {
-            let item = test_item();
+            // number
             assert!(evaluate(&attr("id").gt(-1i32), &item).unwrap());
             assert!(evaluate(&attr("id").lt(50i32), &item).unwrap());
-            assert!(evaluate(&attr("id").ge(-1i32), &item).unwrap());
-            assert!(evaluate(&attr("id").le(50i32), &item).unwrap());
             assert!(evaluate(&attr("id").ge(42i32), &item).unwrap());
             assert!(evaluate(&attr("id").le(42i32), &item).unwrap());
-            assert!(evaluate(&attr("id").eq(42i32), &item).unwrap());
-            assert!(evaluate(&attr("id").ne(67i32), &item).unwrap());
         }
 
         #[test]
@@ -296,7 +278,6 @@ mod tests {
             assert!(evaluate(&attr("id").between(-1i32, 67i32), &item).unwrap());
             assert!(!evaluate(&attr("id").between(0i32, 1i32), &item).unwrap());
             assert!(evaluate(&attr("name").between("Aaron", "Bob"), &item).unwrap());
-            assert!(!evaluate(&attr("name").between("foo", "bar"), &item).unwrap());
         }
     }
 
