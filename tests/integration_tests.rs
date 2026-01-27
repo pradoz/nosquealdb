@@ -102,6 +102,81 @@ fn composite_keys_are_isolated() {
     assert_eq!(get_v("b", "1"), 3);
 }
 
+mod crud {
+    use super::*;
+
+    #[test]
+    fn put_get_delete_simple_key() {
+        let mut table = Table::new("users", KeySchema::simple("user_id", KeyType::S));
+
+        let item = Item::new()
+            .with_s("user_id", "user123")
+            .with_s("name", "Alice")
+            .with_n("count", 42);
+        table.put_item(item.clone()).unwrap();
+
+        let key = PrimaryKey::simple("user123");
+        let retrieved = table.get_item(&key).unwrap().unwrap();
+        assert_eq!(retrieved.get("name"), item.get("name"));
+
+        let deleted = table.delete_item(&key).unwrap();
+        assert!(deleted.is_some());
+        assert!(table.is_empty());
+    }
+
+    #[test]
+    fn put_get_delete_composite_key() {
+        let mut table = Table::new(
+            "users",
+            KeySchema::composite("user_id", KeyType::S, "order_id", KeyType::S),
+        );
+
+        let item = Item::new()
+            .with_s("user_id", "user123")
+            .with_s("order_id", "order456")
+            .with_n("total", 67);
+        table.put_item(item.clone()).unwrap();
+
+        let key = PrimaryKey::composite("user123", "order456");
+        let retrieved = table.get_item(&key).unwrap().unwrap();
+        assert_eq!(retrieved.get("total"), item.get("total"));
+
+        table.delete_item(&key).unwrap();
+        assert!(table.is_empty());
+    }
+
+    #[test]
+    fn get_nonexistent_returns_none() {
+        let table = Table::new("users", KeySchema::simple("user_id", KeyType::S));
+        let result = table.get_item(&PrimaryKey::simple("nonexistent")).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn put_overwrites_and_returns_old() {
+        let mut table = Table::new("users", KeySchema::simple("user_id", KeyType::S));
+
+        let item1 = Item::new()
+            .with_s("user_id", "user123")
+            .with_s("name", "Alice");
+        let item2 = Item::new()
+            .with_s("user_id", "user123")
+            .with_s("name", "Bob");
+
+        let result = table.put(PutRequest::new(item1).return_old()).unwrap();
+        assert!(result.attributes.is_none());
+        assert!(!result.was_update);
+
+        let result = table.put(PutRequest::new(item2).return_old()).unwrap();
+        assert!(result.attributes.is_some());
+        assert!(result.was_update);
+        assert_eq!(
+            result.attributes.unwrap().get("name"),
+            Some(&AttributeValue::S("Alice".into()))
+        );
+    }
+}
+
 mod query {
     use super::*;
 
@@ -126,6 +201,60 @@ mod query {
         assert_eq!(result.count, 0);
         assert!(result.items.is_empty());
         assert_eq!(result.scanned_count, 1);
+    }
+
+    #[test]
+    fn by_partition_key() {
+        let mut table = Table::new(
+            "orders",
+            KeySchema::composite("user", KeyType::S, "order", KeyType::S),
+        );
+
+        for i in 1..=5 {
+            table
+                .put_item(
+                    Item::new()
+                        .with_s("user", "user1")
+                        .with_s("order", format!("order{}", i)),
+                )
+                .unwrap();
+        }
+        table
+            .put_item(
+                Item::new()
+                    .with_s("user", "user2")
+                    .with_s("order", "order1"),
+            )
+            .unwrap();
+
+        let result = table.query(KeyCondition::pk("user1")).unwrap();
+        assert_eq!(result.count, 5);
+    }
+
+    #[test]
+    fn with_sort_key_conditions() {
+        let mut table = Table::new(
+            "test",
+            KeySchema::composite("pk", KeyType::S, "sk", KeyType::S),
+        );
+
+        for sk in ["a", "ab", "abc", "b", "c"] {
+            table
+                .put_item(Item::new().with_s("pk", "user1").with_s("sk", sk))
+                .unwrap();
+        }
+
+        // begins_with
+        let result = table
+            .query(KeyCondition::pk("user1").sk_begins_with("a"))
+            .unwrap();
+        assert_eq!(result.count, 3);
+
+        // between
+        let result = table
+            .query(KeyCondition::pk("user1").sk_between("a", "b"))
+            .unwrap();
+        assert_eq!(result.count, 4);
     }
 
     #[test]
@@ -202,12 +331,35 @@ mod query {
             .collect();
         assert_eq!(found, vec![-42, -1, 0, 8, 20, 37, 100]);
     }
+
+    #[test]
+    fn with_filter() {
+        let mut table = Table::new(
+            "test",
+            KeySchema::composite("pk", KeyType::S, "sk", KeyType::S),
+        );
+
+        for i in 1..=5 {
+            let status = if i % 2 == 0 { "even" } else { "odd" };
+            table
+                .put_item(
+                    Item::new()
+                        .with_s("pk", "user1")
+                        .with_s("sk", format!("item{}", i))
+                        .with_s("status", status),
+                )
+                .unwrap();
+        }
+
+        let result = table
+            .query(QueryRequest::new(KeyCondition::pk("user1")).filter(attr("status").eq("odd")))
+            .unwrap();
+        assert_eq!(result.count, 3);
+    }
 }
 
 mod update {
     use super::*;
-    use nosquealdb::UpdateExpression;
-    use nosquealdb::condition::attr;
 
     fn update_expr() -> UpdateExpression {
         UpdateExpression::new()
@@ -328,7 +480,69 @@ mod update {
 }
 
 mod transactions {
+    use nosquealdb::TransactGetRequest;
+
     use super::*;
+
+    #[test]
+    fn write_multiple_items() {
+        let mut table = Table::new("users", KeySchema::simple("user_id", KeyType::S));
+        let result = table.transact_write(
+            TransactWriteRequest::new()
+                .put(
+                    Item::new()
+                        .with_s("user_id", "user1")
+                        .with_s("name", "Alice"),
+                )
+                .put(Item::new().with_s("user_id", "user2").with_s("name", "Bob")),
+        );
+
+        assert!(result.is_ok());
+        assert_eq!(table.len(), 2);
+    }
+
+    #[test]
+    fn get_multiple_items() {
+        let mut table = Table::new("users", KeySchema::simple("user_id", KeyType::S));
+        table
+            .transact_write(
+                TransactWriteRequest::new()
+                    .put(
+                        Item::new()
+                            .with_s("user_id", "user1")
+                            .with_s("name", "Alice"),
+                    )
+                    .put(Item::new().with_s("user_id", "user2").with_s("name", "Bob")),
+            )
+            .unwrap();
+        assert_eq!(table.len(), 2);
+
+        let result = table
+            .transact_get(
+                TransactGetRequest::new()
+                    .get(PrimaryKey::simple("user1"))
+                    .get(PrimaryKey::simple("user2"))
+                    .get(PrimaryKey::simple("nonexistent")),
+            )
+            .unwrap();
+        assert_eq!(result.len(), 3);
+        assert_eq!(result.found_count(), 2);
+        assert!(result.get(2).is_none());
+    }
+
+    #[test]
+    fn reject_duplicate_keys() {
+        let mut table =
+            TableBuilder::new("users", KeySchema::simple("user_id", KeyType::S)).build();
+
+        let result = table.transact_write(
+            TransactWriteRequest::new()
+                .put(Item::new().with_s("user_id", "user1"))
+                .put(Item::new().with_s("user_id", "user1")),
+        );
+        assert!(table.is_empty());
+        assert!(result.unwrap_err().is_transaction_canceled());
+    }
 
     #[test]
     fn atomic_transfer() {
@@ -487,32 +701,6 @@ mod gsi {
             .unwrap();
         assert!(item.is_some());
     }
-
-    #[test]
-    fn updated_on_delete() {
-        let schema = KeySchema::composite("pk", KeyType::S, "sk", KeyType::S);
-        let mut table = TableBuilder::new("test", schema)
-            .with_gsi(GsiBuilder::new(
-                "by-date",
-                KeySchema::simple("date", KeyType::S),
-            ))
-            .build();
-
-        table
-            .put(PutRequest::new(
-                Item::new()
-                    .with_s("pk", "user1")
-                    .with_s("sk", "order1")
-                    .with_s("date", "2026-01-08"),
-            ))
-            .unwrap();
-        assert_eq!(table.gsi("by-date").unwrap().len(), 1);
-
-        table
-            .delete(DeleteRequest::new(PrimaryKey::composite("user1", "order1")))
-            .unwrap();
-        assert_eq!(table.gsi("by-date").unwrap().len(), 0);
-    }
 }
 
 mod lsi {
@@ -586,6 +774,89 @@ mod lsi {
 
 mod conditional_write {
     use super::*;
+
+    #[test]
+    fn put_if_not_exists() {
+        let mut table = Table::new("users", KeySchema::simple("user_id", KeyType::S));
+
+        // first put succeeds
+        table
+            .put(
+                PutRequest::new(
+                    Item::new()
+                        .with_s("user_id", "user123")
+                        .with_s("name", "Alice"),
+                )
+                .if_not_exists(),
+            )
+            .unwrap();
+
+        // second put should fail
+        let result = table.put(
+            PutRequest::new(
+                Item::new()
+                    .with_s("user_id", "user123")
+                    .with_s("name", "Bob"),
+            )
+            .if_not_exists(),
+        );
+        assert!(result.unwrap_err().item_already_exists());
+
+        // original is preserved
+        let item = table
+            .get_item(&PrimaryKey::simple("user123"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(item.get("name"), Some(&AttributeValue::S("Alice".into())));
+    }
+
+    #[test]
+    fn put_with_condition() {
+        let mut table = Table::new("users", KeySchema::simple("user_id", KeyType::S));
+
+        table
+            .put(
+                PutRequest::new(Item::new().with_s("user_id", "user123"))
+                    .condition(attr("user_id").not_exists()),
+            )
+            .unwrap();
+
+        let result = table.put(
+            PutRequest::new(Item::new().with_s("user_id", "user123"))
+                .condition(attr("user_id").not_exists()),
+        );
+        assert!(result.unwrap_err().is_condition_failed());
+    }
+
+    #[test]
+    fn delete_with_condition() {
+        let mut table = Table::new("users", KeySchema::simple("user_id", KeyType::S));
+
+        table
+            .put(PutRequest::new(
+                Item::new()
+                    .with_s("user_id", "user123")
+                    .with_s("status", "inactive"),
+            ))
+            .unwrap();
+
+        // wrong condition should fail
+        let result = table.delete(
+            DeleteRequest::new(PrimaryKey::simple("user123"))
+                .condition(attr("status").eq("active")),
+        );
+        assert!(result.unwrap_err().is_condition_failed());
+        assert_eq!(table.len(), 1);
+
+        // should succeed
+        table
+            .delete(
+                DeleteRequest::new(PrimaryKey::simple("user123"))
+                    .condition(attr("status").eq("inactive")),
+            )
+            .unwrap();
+        assert!(table.is_empty());
+    }
 
     #[test]
     fn preserves_indexes() {
@@ -680,7 +951,7 @@ mod projection {
     }
 
     #[test]
-    fn gsi_include_keys() {
+    fn gsi_include_attributes() {
         let table_schema = KeySchema::composite("pk", KeyType::S, "sk", KeyType::S);
         let gsi_schema = KeySchema::simple("category", KeyType::S);
 
@@ -751,11 +1022,151 @@ mod binary {
     }
 }
 
+mod batch {
+    use super::*;
+    use nosquealdb::BatchWriteRequest;
+
+    #[test]
+    fn batch_put_and_get() {
+        let mut table = Table::new("test", KeySchema::simple("pk", KeyType::S));
+
+        let items = vec![
+            Item::new().with_s("pk", "item1").with_n("value", 1),
+            Item::new().with_s("pk", "item2").with_n("value", 2),
+            Item::new().with_s("pk", "item3").with_n("value", 3),
+        ];
+        let result = table.put_items(items).unwrap();
+        assert!(result.is_complete());
+        assert_eq!(result.processed_count, 3);
+
+        let keys = vec![
+            PrimaryKey::simple("item1"),
+            PrimaryKey::simple("item2"),
+            PrimaryKey::simple("item3"),
+            PrimaryKey::simple("missing"),
+        ];
+        let result = table.get_items(keys).unwrap();
+        assert!(result.is_complete());
+        assert_eq!(result.found_count(), 3);
+        assert_eq!(result.not_found_keys.len(), 1);
+    }
+
+    #[test]
+    fn batch_delete() {
+        let mut table = Table::new("test", KeySchema::simple("pk", KeyType::S));
+
+        for i in 0..5 {
+            table
+                .put_item(Item::new().with_s("pk", format!("item{}", i)))
+                .unwrap();
+        }
+
+        let keys: Vec<_> = (0..5)
+            .map(|i| PrimaryKey::simple(format!("item{}", i)))
+            .collect();
+        let result = table.delete_items(keys).unwrap();
+
+        assert!(result.is_complete());
+        assert_eq!(result.processed_count, 5);
+        assert!(table.is_empty());
+    }
+
+    #[test]
+    fn batch_updates_indexes() {
+        let mut table = TableBuilder::new(
+            "test",
+            KeySchema::composite("pk", KeyType::S, "sk", KeyType::S),
+        )
+        .with_gsi(GsiBuilder::new(
+            "by-status",
+            KeySchema::simple("status", KeyType::S),
+        ))
+        .build();
+
+        table
+            .batch_write(
+                BatchWriteRequest::new()
+                    .put(
+                        Item::new()
+                            .with_s("pk", "user1")
+                            .with_s("sk", "order1")
+                            .with_s("status", "pending"),
+                    )
+                    .put(
+                        Item::new()
+                            .with_s("pk", "user1")
+                            .with_s("sk", "order2")
+                            .with_s("status", "pending"),
+                    ),
+            )
+            .unwrap();
+
+        let result = table
+            .query_gsi("by-status", KeyCondition::pk("pending"))
+            .unwrap();
+        assert_eq!(result.count, 2);
+    }
+}
+
+mod scan {
+    use super::*;
+    use nosquealdb::ScanRequest;
+
+    #[test]
+    fn scan_all() {
+        let mut table = Table::new("test", KeySchema::simple("pk", KeyType::S));
+
+        for i in 0..10 {
+            table
+                .put_item(Item::new().with_s("pk", format!("item{}", i)))
+                .unwrap();
+        }
+
+        let items = table.scan_all().unwrap();
+        assert_eq!(items.len(), 10);
+    }
+
+    #[test]
+    fn scan_with_filter() {
+        let mut table = Table::new("test", KeySchema::simple("pk", KeyType::S));
+
+        for i in 0..10 {
+            let parity = if i % 2 == 0 { "even" } else { "odd" };
+            table
+                .put_item(
+                    Item::new()
+                        .with_s("pk", format!("item{}", i))
+                        .with_s("parity", parity),
+                )
+                .unwrap();
+        }
+
+        let items = table
+            .scan(ScanRequest::new().filter(attr("parity").eq("even")))
+            .unwrap();
+        assert_eq!(items.len(), 5);
+    }
+
+    #[test]
+    fn scan_with_limit() {
+        let mut table = Table::new("test", KeySchema::simple("pk", KeyType::S));
+
+        for i in 0..10 {
+            table
+                .put_item(Item::new().with_s("pk", format!("item{}", i)))
+                .unwrap();
+        }
+
+        let items = table.scan(ScanRequest::new().limit(3)).unwrap();
+        assert_eq!(items.len(), 3);
+    }
+}
+
 mod edge_cases {
     use super::*;
 
     #[test]
-    fn empty_string() {
+    fn empty_string_key() {
         let mut table = Table::new("test", KeySchema::simple("pk", KeyType::S));
 
         table
