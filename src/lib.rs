@@ -15,7 +15,7 @@ pub use batch::{
     BatchWriteResult,
 };
 pub use error::{StorageError, StorageResult, TableError, TableResult, TransactionCancelReason};
-pub use index::{GlobalSecondaryIndex, GsiBuilder, LocalSecondaryIndex, LsiBuilder, Projection};
+pub use index::{IndexBuilder, Projection, SecondaryIndex};
 pub use query::{KeyCondition, QueryOptions, QueryResult, SortKeyOp};
 pub use storage::{MemoryStorage, Storage, StorageExt};
 pub use table::{
